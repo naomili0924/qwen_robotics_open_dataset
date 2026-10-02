@@ -29,16 +29,18 @@ PIX_OCCUPIED, PIX_UNKNOWN, PIX_FREE = 0, 127, 255
 def masked_frame_grids(seg, bev):
     """Decode the BEV grid of every segment frame and blank out movable objects.
 
-    bev: {source_frame: ((ix0, iy0), zlib blob)}.  Returns {segment_index: (origin, grid)}.
+    bev: {key: ((ix0, iy0), zlib blob)}, keyed by seg["bev_keys"] if present, else by
+    source frame number.  Returns {segment_index: (origin, grid)}.
     Movable objects (pedestrians, cycles, vehicles...) are represented by their
     boxes, so their lidar returns must not be baked into the static map.
     """
     movable = np.flatnonzero(seg["types"] != STATIC)
+    keys = seg["bev_keys"] if "bev_keys" in seg else [int(f) for f in seg["frames"]]
     out = {}
-    for i, frame in enumerate(seg["frames"]):
-        if int(frame) not in bev:
+    for i, key in enumerate(keys):
+        if key not in bev:
             continue
-        origin, blob = bev[int(frame)]
+        origin, blob = bev[key]
         grid = np.frombuffer(zlib.decompress(blob), np.uint8).reshape(FRAME_GRID, FRAME_GRID).copy()
         for n in movable[seg["valid"][movable, i]]:
             l, w = seg["dims"][n, 0] / 2 + BOX_MARGIN, seg["dims"][n, 1] / 2 + BOX_MARGIN
@@ -51,7 +53,7 @@ def masked_frame_grids(seg, bev):
     return out
 
 
-def compose_map(grids, contrib, centre_xy, yaw, min_span):
+def compose_map(grids, contrib, centre_xy, yaw, min_span, close_cells=5):
     """Merge frame grids and resample into the ego-aligned map image.
 
     grids: output of masked_frame_grids.  contrib: segment indices to merge.
@@ -61,6 +63,8 @@ def compose_map(grids, contrib, centre_xy, yaw, min_span):
     the merged frames).  Not every moving object is labelled in every frame, so
     the box cut-out alone leaves streaks along their paths; a moving object
     occupies a given cell only briefly, a static one for as long as it is seen.
+    close_cells: unknown gaps between lidar rings on open ground up to this many
+    cells wide are filled as free (sparser lidars need more).
     """
     c0 = np.floor(np.asarray(centre_xy) / RES).astype(np.int64) - CANVAS // 2
     occ = np.zeros((CANVAS, CANVAS), np.uint16)
@@ -88,7 +92,7 @@ def compose_map(grids, contrib, centre_xy, yaw, min_span):
         & (last - first >= min(min_span, used // 2))
     free_m = (free > 0) & ~occ_m
     # Lidar rings leave thin unobserved gaps on open ground; close them.
-    free_m = ndimage.binary_closing(free_m | occ_m, structure=np.ones((5, 5), bool)) & ~occ_m
+    free_m = ndimage.binary_closing(free_m | occ_m, structure=np.ones((close_cells, close_cells), bool)) & ~occ_m
 
     rc = MAP_RANGE - (np.arange(MAP_SIZE, dtype=np.float32) + 0.5) * MAP_RES
     xs, ys = np.meshgrid(rc, rc, indexing="ij")  # xs varies with row, ys with column

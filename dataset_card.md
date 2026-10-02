@@ -124,7 +124,7 @@ offsets in the source world frame; z is height above the plane the robot stands 
 | `category` | [N] | CODa class name (52 classes, e.g. `Pedestrian`, `Bike`, `Pole`, `Tree`) |
 | `object_type` | [N] | `PEDESTRIAN`, `CYCLE` (bike, scooter, motorcycle, skateboard, segway), `VEHICLE`, `OTHER_MOVABLE`, or `STATIC` |
 | `length`, `width`, `height` | [N] | box size (median over the segment) |
-| `is_stationary` | [N] | `STATIC` type, or stays within 0.25 m of its median position during the scenario |
+| `is_stationary` | [N] | `STATIC` type, or seen for at least 3 steps over at least 1 s and staying within 0.25 m of its median position during the scenario |
 | `is_operator` | [N] | the robot's human operator, who walks next to it (see Limitations) |
 | `x`, `y`, `z`, `heading` | [N, 21] | box centre and yaw per step, NaN where not valid |
 | `vx`, `vy` | [N, 21] | velocity by central differences over up to +-0.3 s |
@@ -166,9 +166,9 @@ Baselines on the test split (collision rates in %, ADE/FDE in m):
 
 | `coda_2hz` (5 s horizon) | any | dynamic | static | map | ADE | FDE |
 |---|---|---|---|---|---|---|
-| recorded path (`expert`) | 1.2 | 0.3 | 0.3 | 0.6 | 0.00 | 0.00 |
-| `constant_velocity` | 4.7 | 1.9 | 0.3 | 2.5 | 0.22 | 0.47 |
-| `straight_to_goal` | 4.0 | 0.3 | 0.3 | 3.7 | 0.07 | 0.00 |
+| recorded path (`expert`) | 0.9 | 0.3 | 0.0 | 0.6 | 0.00 | 0.00 |
+| `constant_velocity` | 4.3 | 1.9 | 0.0 | 2.5 | 0.22 | 0.47 |
+| `straight_to_goal` | 3.7 | 0.3 | 0.0 | 3.7 | 0.07 | 0.00 |
 | `stationary` | 8.4 | 8.4 | 0.0 | 0.0 | 2.52 | 4.59 |
 
 | `coda_10hz` (1 s horizon) | any | dynamic | static | map | ADE | FDE |
@@ -179,7 +179,7 @@ Baselines on the test split (collision rates in %, ADE/FDE in m):
 | `stationary` | 1.6 | 1.6 | 0.0 | 0.0 | 0.49 | 0.90 |
 
 The recorded path did not actually hit anything, so its collision rate is the label-noise floor
-of the benchmark: 1.2% on `coda_2hz` test (2.1% on train, 0% on validation) and 0.3% on `coda_10hz`
+of the benchmark: 0.9% on `coda_2hz` test (1.7% on train, 0% on validation) and 0.3% on `coda_10hz`
 test. Differences smaller than that are not meaningful.
 
 ## How it was built

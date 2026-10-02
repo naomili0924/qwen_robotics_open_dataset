@@ -22,7 +22,10 @@ _JUMP_LIMITS = {PEDESTRIAN: (1.0, 4.0), CYCLE: (1.5, 15.0), VEHICLE: (1.5, 15.0)
                 OTHER_MOVABLE: (1.5, 15.0), STATIC: (1.0, 0.0)}
 MAX_BOX_RANGE = 150.0   # boxes further than this from the robot are label garbage
 MAX_BOX_DIM = 40.0
-STATIONARY_RADIUS = 0.25  # a track that stays within this of its median position is stationary
+STATIONARY_RADIUS = 0.25  # a track that stays within this of its median position is stationary (segments may override)
+STATIONARY_MIN_STEPS = 3   # ... and only if it is seen at least this many steps
+STATIONARY_MIN_S = 1.0     # ... spanning at least this long
+VELOCITY_HALF_WINDOW_S = 0.3  # velocities are central differences over up to +- this long (at least one frame)
 # The robot's human operator (sometimes two people) walks right next to it for
 # whole recordings.  Within OPERATOR_CONTEXT_S of a scenario's current step, a
 # pedestrian track counts as operator if it stays within OPERATOR_RADIUS of the
@@ -88,6 +91,7 @@ def clean_segment(seg, type_of):
     _interpolate_unlabelled(seg)
     ts = seg["timestamps"]
     F = len(ts)
+    k_max = max(1, int(round(VELOCITY_HALF_WINDOW_S * seg["rate_hz"])))
     ego_xyz = seg["ego_T"][:, :3, 3]
     ego_yaw = yaw_of(seg["ego_T"][:, :3, :3])
     out = []
@@ -128,10 +132,10 @@ def clean_segment(seg, type_of):
         seg["yaw"][n, v] = wrap(t["yaw"][v])
         seg["occlusion"][n, v] = [OCCLUSION_CODES.get(o, 5) for o in t["occlusion"][v]]
         seg["dims"][n] = np.median(t["lwh"][v], axis=0)
-        seg["vel"][n] = finite_diff_velocity(np.nan_to_num(seg["xyz"][n, :, :2]), v, ts)
+        seg["vel"][n] = finite_diff_velocity(np.nan_to_num(seg["xyz"][n, :, :2]), v, ts, k_max)
         seg["near_ego"][n, v] = np.linalg.norm(seg["xyz"][n, v, :2] - ego_xyz[v, :2], axis=1) < OPERATOR_RADIUS
     seg["ego_xyz"], seg["ego_yaw"] = ego_xyz, ego_yaw
-    seg["ego_vel"] = finite_diff_velocity(ego_xyz[:, :2], np.ones(F, bool), ts)
+    seg["ego_vel"] = finite_diff_velocity(ego_xyz[:, :2], np.ones(F, bool), ts, k_max)
     return seg
 
 
@@ -193,12 +197,15 @@ def build_scenario(seg, anchor, step):
     heading = wrap(seg["yaw"][keep][:, idx] - yaw0)
     types = seg["types"][keep]
 
-    # Stationary: static classes always; others if they do not move inside the window.
+    # Stationary: static classes always; others if they are seen staying put inside the
+    # window.  One or two sightings are not evidence of that, so they do not count.
     xy = xyz[..., :2]
     with np.errstate(all="ignore"):
         med = np.nanmedian(xy, axis=1, keepdims=True)
         spread = np.nanmax(np.linalg.norm(xy - med, axis=2), axis=1)
-    is_stationary = (types == STATIC) | (spread < STATIONARY_RADIUS)
+    first, last = valid.argmax(1), valid.shape[1] - 1 - valid[:, ::-1].argmax(1)
+    seen_long = (valid.sum(1) >= STATIONARY_MIN_STEPS) & ((last - first) * step / seg["rate_hz"] >= STATIONARY_MIN_S)
+    is_stationary = (types == STATIC) | (seen_long & (spread < seg.get("stationary_radius", STATIONARY_RADIUS)))
     is_operator = find_operators(seg, anchor, keep)
     movable = types != STATIC
     to_predict = np.flatnonzero(movable & ~is_operator & valid[:, CURRENT] & valid[:, CURRENT + 1:].any(1))

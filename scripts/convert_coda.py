@@ -11,13 +11,12 @@ import sys
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
-import numpy as np
-from datasets import Dataset
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from hnod import coda, maps, scenario  # noqa: E402
-from hnod.io import FEATURES, to_row  # noqa: E402
+from hnod import coda, scenario  # noqa: E402
+from hnod.io import FEATURES  # noqa: E402
+from hnod.pipeline import segment_rows, write_shards  # noqa: E402
 
 # name -> (frames between steps, frames between consecutive scenarios) at CODa's 10 Hz
 CONFIGS = {"coda_10hz": (1, 5), "coda_2hz": (5, 10)}
@@ -25,7 +24,6 @@ CONFIGS = {"coda_10hz": (1, 5), "coda_2hz": (5, 10)}
 SPLIT_OF = {**{s: "validation" for s in (4, 10, 19)}, **{s: "test" for s in (1, 7, 9, 12, 17)}}
 MAP_CONTEXT_FRAMES = 50  # static_map merges lidar from +-5 s around the current step, observed_map the past 5 s
 MIN_STATIC_SPAN = 20     # frames (2 s) an obstacle cell must persist to count as static
-SHARD_ROWS = 500
 
 _TYPES = {
     scenario.PEDESTRIAN: {"Pedestrian"},
@@ -61,16 +59,8 @@ def convert_sequence(args):
     rows = {name: [] for name in CONFIGS}
     for seg in coda.load_segments(raw, seq):
         scenario.clean_segment(seg, type_of)
-        grids = maps.masked_frame_grids(seg, bev)
-        F = len(seg["frames"])
         for name, (step, stride) in CONFIGS.items():
-            for a in scenario.window_anchors(seg, step, stride):
-                sc = scenario.build_scenario(seg, a, step)
-                centre, yaw = seg["ego_xyz"][a, :2], seg["ego_yaw"][a]
-                around = range(max(0, a - MAP_CONTEXT_FRAMES), min(F, a + MAP_CONTEXT_FRAMES + 1))
-                past = range(max(0, a - MAP_CONTEXT_FRAMES), a + 1)
-                rows[name].append(to_row(sc, maps.compose_map(grids, around, centre, yaw, MIN_STATIC_SPAN),
-                                         maps.compose_map(grids, past, centre, yaw, MIN_STATIC_SPAN), maps.MAP_RES))
+            rows[name] += segment_rows(seg, bev, step, stride, MAP_CONTEXT_FRAMES, MIN_STATIC_SPAN)
     return seq, rows
 
 
@@ -94,13 +84,7 @@ def main():
 
     for name, splits in rows.items():
         for split, r in splits.items():
-            r.sort(key=lambda x: x["scenario_id"])
-            n = int(np.ceil(len(r) / SHARD_ROWS))
-            d = Path(args.out) / name
-            d.mkdir(parents=True, exist_ok=True)
-            for k in range(n):
-                Dataset.from_list(r[k * SHARD_ROWS:(k + 1) * SHARD_ROWS], features=FEATURES) \
-                    .to_parquet(d / f"{split}-{k:05d}-of-{n:05d}.parquet")
+            n = write_shards(r, Path(args.out) / name, split, FEATURES)
             print(f"{name:10s} {split:10s} {len(r):6d} scenarios in {n} shards")
 
 
