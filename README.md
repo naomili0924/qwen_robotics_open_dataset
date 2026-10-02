@@ -102,6 +102,83 @@ python scripts/convert_robosense.py --pkl data/raw/robosense/splits --bev data/i
     --images data/interim/robosense_images --out data/hf_robosense
 ```
 
+## Train a policy (Qwen-VL backbone + pluggable heads)
+
+`vla/` is a small pipeline-style library for image-in, trajectory-out policies on these scenarios: a
+Qwen-VL backbone reads the 11 past frames plus a short prompt (speed, past positions, goal), and heads
+on its embedding emit the 10 future positions and, optionally, other quantities. Three independent
+design axes are flags:
+
+| Flag | Choices | What it decides |
+|---|---|---|
+| `--head` | `regression`, `flow` | regress one trajectory (optionally `--modes K` hypotheses, winner-takes-all), or sample from a flow-matching head |
+| `--denoiser` | `mlp`, `dit` | flow head only: an MLP on pooled features, or a DiT with cross-attention to every backbone token |
+| `--backbone` / `--backbone-mode` | any Qwen-VL checkpoint; `frozen`, `lora`, `full` | which model, and how much of it trains (`--tune-vision` includes the vision tower) |
+| `--tasks` | `trajectory` plus any of `occupancy`, `collision`, `pedestrians`, `progress` | extra heads on the same embedding (see `vla/tasks.py`; adding a task is one class) |
+
+```python
+from vla.pipeline import NavigationPipeline
+
+pipe = NavigationPipeline(data="Jinyan0924/qwen_robotics_open_dataset", config_name="coda_2hz",
+                          head="flow", denoiser="dit", backbone_mode="lora", tasks="trajectory,occupancy")
+pipe.fit(steps=2000, run="runs/flow_dit")                # validation metrics every 250 steps
+pipe.save_pretrained("runs/flow_dit/final")
+
+out = pipe.predict(images, ego_history, goal, rate_hz=2.0)   # 11 PIL images, (11, 2) past xy, (2,) goal
+out["trajectory"]                                        # (10, 2) metres in the robot frame
+out["occupancy"]                                         # (8, 8) occupancy ahead, if that head is attached
+
+# Is the learnt embedding transferable?  Attach a new head, freeze everything else, train only the head.
+pipe = NavigationPipeline.from_pretrained("runs/flow_dit/final")
+pipe.add_task("collision")
+pipe.freeze_backbone()
+pipe.fit(steps=300, run="runs/transfer_collision")
+pipe.evaluate(split="validation", scenarios=200)        # collision_auroc / collision_acc, plus the rest
+```
+
+The same from the command line:
+
+```bash
+pip install -r requirements-train.txt
+python -m vla.train   --data /path/to/coda_2hz --head flow --denoiser dit --tasks trajectory,occupancy --run runs/flow_dit
+python -m vla.train   --init-from runs/flow_dit/last --freeze-backbone --tasks trajectory,occupancy,collision --run runs/transfer
+python -m vla.predict --checkpoint runs/flow_dit/last --split validation --out runs/flow_dit/val_pred.json
+
+# sanity checks, a few minutes each
+python -m vla.debug data     --data /path/to/coda_2hz --run runs/debug           # prompts, token counts, a figure
+python -m vla.debug forward  --data /path/to/coda_2hz --run runs/debug           # losses, grad norms, GPU memory
+python -m vla.debug compare  --data /path/to/coda_2hz --run runs/debug --steps 150   # overfit 8 scenarios with every head
+python -m vla.debug pipeline --data /path/to/coda_2hz --run runs/debug --steps 20    # fit / save / reload / add head / predict
+```
+
+Checkpoints hold the heads, the LoRA adapter (or full backbone weights) and the config. Logs go to
+`<run>/log.jsonl` and TensorBoard; validation metrics are the collision evaluator's (`collided`,
+`collided_lidar`, ADE, FDE) plus each task's own. On one H100, Qwen2.5-VL-3B with LoRA at 448 px per
+frame takes about 13 GB at batch 4 and 2 s per step.
+
+### Is the embedding good enough for an MLP head?
+
+`vla.probe` answers that before any training. It freezes the backbone, extracts pooled features at
+every layer (last prompt token, mean of image tokens, mean of text tokens), fits a linear probe and a
+small MLP probe on each, and compares them with kinematics-only probes (past positions, speed, goal)
+on three targets: the future trajectory, the *residual* of the trajectory against the straight line
+to the goal (the part that needs the scene), and an 8 x 8 occupancy grid of the 8 m ahead (whether
+the embedding knows where obstacles are).
+
+```bash
+python -m vla.probe --data /path/to/coda_2hz --run runs/probe --train-samples 600 --val-samples 200
+```
+
+It writes `probe.png` (metric vs layer) and `probe_summary.txt`. Linear close to MLP: the feature is
+linearly usable, an MLP head is enough. MLP far better than linear: the information is there but
+entangled, a deeper head helps. Neither beating the kinematic baseline: the frozen embedding lacks the
+information, so adapt the backbone (`--backbone-mode lora`) or give the head token-level access
+(`--denoiser dit`). Best layer well before the last: tap an earlier layer.
+
+Every Config field in `vla/config.py` is a flag. Logs go to `<run>/log.jsonl` and TensorBoard; the
+validation metrics are the collision evaluator's (`collided`, `collided_lidar`, ADE, FDE). On one H100,
+Qwen2.5-VL-3B with LoRA at 448 px per frame takes about 13 GB at batch 4 and 2 s per step.
+
 ## Layout
 
 | Path | Purpose |
@@ -115,6 +192,7 @@ python scripts/convert_robosense.py --pkl data/raw/robosense/splits --bev data/i
 | `hnod/io.py` | Parquet schema |
 | `hnod/eval.py` | collision evaluator and baselines |
 | `scripts/` | download, stream, convert, evaluate, visualise, publish |
+| `vla/` | policy training: `data.py` prompts and targets, `heads.py` regression / flow heads with MLP or DiT denoisers, `model.py` backbone + LoRA, `train.py`, `predict.py`, `debug.py` pipeline checks, `probe.py` representation probing |
 
 Adding another source means writing a reader that returns segments in the layout documented in
 `hnod.coda.load_segments`; everything downstream is shared.
