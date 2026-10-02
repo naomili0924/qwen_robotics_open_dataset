@@ -1,0 +1,10 @@
+numpy
+scipy
+opencv-python-headless
+pillow
+datasets>=4.0
+huggingface_hub
+matplotlib
+tqdm
+requests
+remotezip
