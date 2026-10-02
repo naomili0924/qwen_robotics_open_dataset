@@ -53,8 +53,9 @@ def load_frames(pkl_dir, split):
 def _camera(frame):
     """Front-camera geometry in the layout pipeline.camera_inputs expects.
 
-    The source images are distorted; converters undistort them, after which the
-    intrinsic matrix alone describes them.  Calibration is constant per recording batch.
+    The published images are already undistorted (the `cam_dist` coefficients in the
+    annotation files describe the lens, not these images), so the intrinsic matrix
+    alone describes them.  Calibration is constant per recording batch.
     """
     cam = frame["images"]["cams"][CAMERA]
     ego_from_camera = np.eye(4)
@@ -224,8 +225,6 @@ def chain_to_segment(chain, split, index, origin_heights=None):
                 lidar_heights=np.array([fr["hs2livox"][2, 3] for fr in chain]) + origin_height,
                 point_keys=[fr["hs64_path"] for fr in chain], camera=_camera(chain[0]),
                 image_paths=[fr["images"]["cams"][CAMERA]["data_path"] for fr in chain],
-                image_calib=[(np.array(fr["images"]["cams"][CAMERA]["cam_intrinsic"], dtype=np.float64),
-                              np.array(fr["images"]["cams"][CAMERA]["cam_dist"], dtype=np.float64)) for fr in chain],
                 seq_tokens=np.array([fr["seq_token"] for fr in chain]), map_token=chain[0]["map_token"])
 
 
