@@ -14,6 +14,12 @@ the map is not: the map already contains those objects with their true ground-le
 footprint, whereas their boxes also enclose overhead parts such as sign plates and
 lamp arms.  Obstacles that already overlap the ego at the current step are ignored,
 as is the robot operator who walks next to the recording platform.
+
+A fourth, independent check uses the per-step lidar points (`future_lidar`): the
+path collides if, at the time it reaches a place, the sweep of that step has
+non-ground points there between LIDAR_MIN_Z and LIDAR_MAX_Z above the ground.  It
+sees unlabelled moving objects that boxes miss, but only what the sensor could
+see at that instant.  It is reported separately as `collided_lidar`.
 """
 import io
 
@@ -28,6 +34,8 @@ DEFAULT_RADIUS = 0.3     # m, roughly half a humanoid's shoulder width
 PEDESTRIAN_RADIUS = 0.3  # m, pedestrians are checked as discs: their labelled boxes are loose (~1 m wide)
 OVERHEAD_CLEARANCE = 2.0  # m, boxes whose underside is above this cannot be hit
 SUBSTEP_S = 0.1          # paths are checked at least this densely in time
+LIDAR_MIN_Z, LIDAR_MAX_Z = 0.25, 1.9  # height band of lidar points that can be hit [m]
+LIDAR_MIN_POINTS = 3     # points needed within reach to call it a hit (single returns are noise)
 
 
 def decode_map(cell):
@@ -35,6 +43,17 @@ def decode_map(cell):
     if isinstance(cell, dict):
         cell = Image.open(io.BytesIO(cell["bytes"]))
     return np.asarray(cell)
+
+
+def future_tracks(row):
+    """Track table restricted to the current and future steps (index 0 = current step).
+
+    Rows written before the image/lidar layout stored all 21 steps under `tracks`.
+    """
+    if row.get("future_tracks") is not None:
+        return row["future_tracks"]
+    tr = row["tracks"]
+    return {k: ([s[CURRENT:] for s in v] if v and isinstance(v[0], (list, np.ndarray)) else v) for k, v in tr.items()}
 
 
 def box_distance(px, py, cx, cy, heading, length, width):
@@ -57,7 +76,8 @@ def _dense(values, n_sub, angle=False):
     return out.reshape(*values.shape[:-1], -1)
 
 
-def evaluate_scenario(row, pred_xy, radius=DEFAULT_RADIUS, use_map=True, pedestrian_radius=PEDESTRIAN_RADIUS):
+def evaluate_scenario(row, pred_xy, radius=DEFAULT_RADIUS, use_map=True, pedestrian_radius=PEDESTRIAN_RADIUS,
+                      use_lidar=True):
     """Score one predicted future path.
 
     row: a dataset row (dict).  pred_xy: (N_FUTURE, 2) scenario-frame positions
@@ -66,14 +86,14 @@ def evaluate_scenario(row, pred_xy, radius=DEFAULT_RADIUS, use_map=True, pedestr
     """
     pred_xy = np.asarray(pred_xy, dtype=np.float64)
     assert pred_xy.shape == (N_FUTURE, 2), pred_xy.shape
-    ego, tr = row["ego"], row["tracks"]
+    ego, tr = row["ego"], future_tracks(row)
     use_map = use_map and row.get("static_map") is not None
     n_sub = max(1, int(round(1.0 / row["rate_hz"] / SUBSTEP_S)))
     path = np.vstack([[ego["x"][CURRENT], ego["y"][CURRENT]], pred_xy])
     px, py = _dense(path[:, 0], n_sub), _dense(path[:, 1], n_sub)  # (S,)
     S = px.size
     res = dict(scenario_id=row["scenario_id"], collided_dynamic=False, collided_static=False, collided_map=False,
-               clearance_dynamic=np.inf, clearance_static=np.inf, clearance_map=np.inf,
+               collided_lidar=False, clearance_dynamic=np.inf, clearance_static=np.inf, clearance_map=np.inf,
                first_collision_s=np.nan, start_overlap=False, unknown_fraction=0.0)
     hit_time = np.full(S, False)
 
@@ -99,7 +119,7 @@ def evaluate_scenario(row, pred_xy, radius=DEFAULT_RADIUS, use_map=True, pedestr
         # --- stationary tracks: frozen at the valid step closest to the current one
         idx = np.flatnonzero(stationary & reachable)
         if len(idx):
-            order = np.argsort(np.abs(np.arange(valid.shape[1]) - CURRENT))
+            order = np.arange(valid.shape[1])  # nearest valid step to the current one (index 0)
             ref = order[np.argmax(valid[idx][:, order], axis=1)]
             sx, sy, sh = x[idx, ref], y[idx, ref], hd[idx, ref]
             start = box_distance(path[0, 0], path[0, 1], sx, sy, sh, L[idx, 0], W[idx, 0]) <= reach[idx]
@@ -113,19 +133,18 @@ def evaluate_scenario(row, pred_xy, radius=DEFAULT_RADIUS, use_map=True, pedestr
         # --- moving tracks: interpolated between consecutive valid future steps
         idx = np.flatnonzero(~stationary & reachable)
         if len(idx):
-            fut = slice(CURRENT, None)
-            v = valid[idx][:, fut]
+            v = valid[idx]
             ok = np.repeat(v[:, :-1] & v[:, 1:], n_sub, axis=1)
             ok[:, n_sub - 1::n_sub] = v[:, 1:]  # a sub-step that lands on a step only needs that step
-            ax = _dense(np.nan_to_num(x[idx][:, fut]), n_sub)
-            ay = _dense(np.nan_to_num(y[idx][:, fut]), n_sub)
-            ah = _dense(np.nan_to_num(hd[idx][:, fut]), n_sub, angle=True)
+            ax = _dense(np.nan_to_num(x[idx]), n_sub)
+            ay = _dense(np.nan_to_num(y[idx]), n_sub)
+            ah = _dense(np.nan_to_num(hd[idx]), n_sub, angle=True)
             # a sub-step landing exactly on a valid step must use that step's own pose
-            ax[:, n_sub - 1::n_sub], ay[:, n_sub - 1::n_sub] = x[idx][:, fut][:, 1:], y[idx][:, fut][:, 1:]
-            ah[:, n_sub - 1::n_sub] = hd[idx][:, fut][:, 1:]
+            ax[:, n_sub - 1::n_sub], ay[:, n_sub - 1::n_sub] = x[idx][:, 1:], y[idx][:, 1:]
+            ah[:, n_sub - 1::n_sub] = hd[idx][:, 1:]
             with np.errstate(invalid="ignore"):
-                start = valid[idx, CURRENT] & (box_distance(path[0, 0], path[0, 1], x[idx, CURRENT], y[idx, CURRENT],
-                                                            hd[idx, CURRENT], L[idx, 0], W[idx, 0]) <= reach[idx])
+                start = valid[idx, 0] & (box_distance(path[0, 0], path[0, 1], x[idx, 0], y[idx, 0],
+                                                      hd[idx, 0], L[idx, 0], W[idx, 0]) <= reach[idx])
             res["start_overlap"] |= bool(start.any())
             ok &= ~start[:, None]
             gap = box_distance(px[None], py[None], np.nan_to_num(ax), np.nan_to_num(ay), np.nan_to_num(ah),
@@ -155,6 +174,26 @@ def evaluate_scenario(row, pred_xy, radius=DEFAULT_RADIUS, use_map=True, pedestr
             hit_time[np.flatnonzero(inside)[d <= radius]] = True
             res["unknown_fraction"] = float((img[r[inside], c[inside]] == PIX_UNKNOWN).mean())
 
+    lidar = row.get("future_lidar") if use_lidar else None
+    if lidar is not None:
+        operator = np.flatnonzero(np.asarray(tr["is_operator"], dtype=bool)) if len(tr["id"]) else np.zeros(0, int)
+        tau = np.arange(1, S + 1) / n_sub  # time of each path sample, in steps after the current one
+        for step in range(1, len(lidar["x"])):
+            sel = np.flatnonzero(np.abs(tau - step) <= 0.5)
+            lx, ly, lz = (np.asarray(lidar[k][step], dtype=np.float32) / 100 for k in ("x", "y", "z"))
+            label = np.asarray(lidar["label"][step])
+            # Static points where the robot stands now cannot be real obstacles (it is standing there).
+            at_start = (label == 1) & (np.hypot(lx - path[0, 0], ly - path[0, 1]) <= radius + 0.1)
+            hittable = (label != 0) & (lz > LIDAR_MIN_Z) & (lz < LIDAR_MAX_Z) & ~at_start \
+                & ~np.isin(np.asarray(lidar["track"][step]), operator)
+            if not len(sel) or not hittable.any():
+                continue
+            d = np.hypot(lx[hittable][None] - px[sel, None], ly[hittable][None] - py[sel, None])
+            hit = (d <= radius).sum(1) >= LIDAR_MIN_POINTS
+            if hit.any():
+                res["collided_lidar"] = True
+                break
+
     res["collided"] = res["collided_dynamic"] or res["collided_static"] or res["collided_map"]
     if hit_time.any():
         res["first_collision_s"] = float((np.argmax(hit_time) + 1) / (n_sub * row["rate_hz"]))
@@ -166,7 +205,7 @@ def evaluate_scenario(row, pred_xy, radius=DEFAULT_RADIUS, use_map=True, pedestr
 
 def aggregate(results):
     """Mean metrics over a list of evaluate_scenario outputs."""
-    keys = ["collided", "collided_dynamic", "collided_static", "collided_map", "start_overlap",
+    keys = ["collided", "collided_dynamic", "collided_static", "collided_map", "collided_lidar", "start_overlap",
             "unknown_fraction", "ade", "fde"]
     out = {k: float(np.mean([r[k] for r in results])) for k in keys}
     out["num_scenarios"] = len(results)

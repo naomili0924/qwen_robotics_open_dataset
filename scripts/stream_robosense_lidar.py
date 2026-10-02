@@ -6,7 +6,8 @@ only be read front to back.  Parts are fetched ahead of time into a RAM disk
 with many parallel range requests, fed in order through `pigz -dc`, and the
 tar stream is walked once; only the Hesai sweeps of labelled frames that end up
 in scenarios are decoded (see hnod/lidar_bev.py), everything else is skipped.
-Nothing but the ~0.5 GB of grids is kept.
+Per sweep a tri-state grid (batch_*.pkl) and a thinned point cloud with a ground
+flag (points_*.pkl) are kept, a few GB in total.
 
 Needs `pigz` on PATH and HF_TOKEN in the environment (optional for public repos,
 but it lifts rate limits).
@@ -106,8 +107,9 @@ def reduce_sweep(args):
     key, raw, (T, height) = args
     pts = np.frombuffer(raw, dtype=np.float64).reshape(-1, 3)
     pts = pts[np.isfinite(pts).all(1)]
-    _, fi, fj, h, origin = lidar_bev.point_heights(pts, T[:3, :3], T[:3, 3], height)
-    return key, origin, zlib.compress(lidar_bev.rasterize(fi, fj, h).tobytes(), 6)
+    idx, fi, fj, h, origin = lidar_bev.point_heights(pts, T[:3, :3], T[:3, 3], height)
+    packed = lidar_bev.pack_points(*lidar_bev.downsample_points(pts[idx], h))
+    return key, (origin, zlib.compress(lidar_bev.rasterize(fi, fj, h).tobytes(), 6)), packed
 
 
 def main():
@@ -149,15 +151,21 @@ def main():
                             daemon=True)
     feed.start()
 
-    results, futures, n_batch, n_seen, t0 = {}, [], len(list(out.glob("batch_*.pkl"))), 0, time.time()
+    results, points, futures, n_batch, n_seen, t0 = {}, {}, [], len(list(out.glob("batch_*.pkl"))), 0, time.time()
+
+    def collect(fut):
+        key, grid, packed = fut.result()
+        results[key], points[key] = grid, packed
 
     def flush(force=False):
-        nonlocal results, n_batch
+        nonlocal results, points, n_batch
         if results and (force or len(results) >= BATCH):
+            with open(out / f"points_{n_batch:04d}.pkl", "wb") as f:
+                pickle.dump(points, f)
             with open(out / f"batch_{n_batch:04d}.pkl", "wb") as f:
                 pickle.dump(results, f)
             n_batch += 1
-            results = {}
+            results, points = {}, {}
 
     # forkserver: forked workers would inherit pigz's stdin and keep it from ever seeing end-of-file
     ctx = multiprocessing.get_context("forkserver")
@@ -172,16 +180,14 @@ def main():
             n_seen += 1
             todo.discard(key)
             while len(futures) > 4 * args.workers or (futures and futures[0].done()):
-                k, origin, blob = futures.pop(0).result()
-                results[k] = (origin, blob)
+                collect(futures.pop(0))
                 flush()
             if n_seen % 1000 == 0:
                 print(f"{n_seen} sweeps, {time.time() - t0:.0f} s", flush=True)
             if (args.max_frames and n_seen >= args.max_frames) or (absent and not todo):
                 break
         for fut in futures:
-            k, origin, blob = fut.result()
-            results[k] = (origin, blob)
+            collect(fut)
         flush(force=True)
     unzip.kill()
     print(f"processed {n_seen} new sweeps in {time.time() - t0:.0f} s", flush=True)

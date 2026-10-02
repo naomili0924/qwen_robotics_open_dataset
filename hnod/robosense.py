@@ -25,6 +25,7 @@ from scipy.optimize import linear_sum_assignment
 
 RATE_HZ = 1.0
 MAX_STEP_S = 1.5          # frames further apart than this break a chain
+CAMERA = "CAM_FRONT"      # forward pinhole camera, 1920 x 1080
 MAX_EGO_SPEED = 3.0       # m/s; the platform drives below 1 m/s, faster means a pose glitch
 # The platform is a small road sweeper; its size is not published.  Nominal box.
 EGO_SIZE = (1.5, 0.9, 1.4)
@@ -47,6 +48,19 @@ _MOVING = {"Pedestrian": 0.7, "Cyclist": 2.0, "Car": 2.0}  # speed above which h
 def load_frames(pkl_dir, split):
     with open(Path(pkl_dir) / f"robosense_global_{split}.pkl", "rb") as f:
         return pickle.load(f)
+
+
+def _camera(frame):
+    """Front-camera geometry in the layout pipeline.camera_inputs expects.
+
+    The source images are distorted; converters undistort them, after which the
+    intrinsic matrix alone describes them.  Calibration is constant per recording batch.
+    """
+    cam = frame["images"]["cams"][CAMERA]
+    ego_from_camera = np.eye(4)
+    ego_from_camera[:3, :3], ego_from_camera[:3, 3] = cam["sensor2ego_rotation"], cam["sensor2ego_translation"]
+    return dict(name=CAMERA, width=int(cam["img_width"]), height=int(cam["img_height"]),
+                K=np.array(cam["cam_intrinsic"], dtype=np.float64), T_camera_from_ego=np.linalg.inv(ego_from_camera))
 
 
 def recording_of(frame):
@@ -208,6 +222,10 @@ def chain_to_segment(chain, split, index, origin_heights=None):
                 # Height above ground of the frame the sweep is stored in: the Hesai frame, except in the
                 # last recording batch where sweeps are already in the ego frame (hs2livox is identity).
                 lidar_heights=np.array([fr["hs2livox"][2, 3] for fr in chain]) + origin_height,
+                point_keys=[fr["hs64_path"] for fr in chain], camera=_camera(chain[0]),
+                image_paths=[fr["images"]["cams"][CAMERA]["data_path"] for fr in chain],
+                image_calib=[(np.array(fr["images"]["cams"][CAMERA]["cam_intrinsic"], dtype=np.float64),
+                              np.array(fr["images"]["cams"][CAMERA]["cam_dist"], dtype=np.float64)) for fr in chain],
                 seq_tokens=np.array([fr["seq_token"] for fr in chain]), map_token=chain[0]["map_token"])
 
 

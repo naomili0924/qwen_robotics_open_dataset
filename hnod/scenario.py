@@ -163,23 +163,24 @@ def find_operators(seg, anchor, rows):
 
 
 def build_scenario(seg, anchor, step):
-    """Cut one ego-centric scenario around segment frame `anchor`."""
+    """Cut one ego-centric scenario around segment frame `anchor`.
+
+    The scenario frame is the robot's own frame at the current step, moved down to
+    the ground: origin on the ground under the sensor/ego origin, +x forward, +y
+    left, +z along the robot's up axis.  It is a rigid transform of the source world
+    frame (`world_from_scenario`), so lidar points and camera poses map into it exactly.
+    Headings and velocities are rotated by the ego yaw only, which ignores the
+    robot's tilt (a few degrees at most).
+    """
     idx = anchor + step * np.arange(-N_PAST, N_FUTURE + 1)
     yaw0 = seg["ego_yaw"][anchor]
-    origin = seg["ego_xyz"][anchor] - np.array([0.0, 0.0, seg["lidar_height"]])
+    R_cur, t_cur = seg["ego_T"][anchor, :3, :3], seg["ego_T"][anchor, :3, 3]
+    lift = np.array([0.0, 0.0, seg["lidar_height"]])
     c, s = np.cos(yaw0), np.sin(yaw0)
-    R = np.array([[c, s], [-s, c]])  # world -> scenario (2D)
-
-    R_up = seg["ego_T"][anchor, :3, 2]  # robot's up axis in the world frame
+    R = np.array([[c, s], [-s, c]])  # world -> scenario (2D), for headings and velocities
 
     def to_local(xyz):
-        # x, y: horizontal offset in the world frame, rotated to the ego heading.
-        # z: height above the plane the robot stands on, measured along the robot's
-        # own up axis so it does not inherit tilt or drift of the world frame.
-        out = xyz - origin
-        out[..., 2] = (xyz - seg["ego_xyz"][anchor]) @ R_up + seg["lidar_height"]
-        out[..., :2] = out[..., :2] @ R.T
-        return out
+        return (xyz - t_cur) @ R_cur + lift
 
     L, W, H = seg["ego_size"]
     ego_local = to_local(seg["ego_xyz"][idx].copy())
@@ -189,7 +190,7 @@ def build_scenario(seg, anchor, step):
                vx=ego_vel[:, 0], vy=ego_vel[:, 1], length=L, width=W, height=H)
 
     valid = seg["valid"][:, idx]
-    keep = np.flatnonzero(valid.any(1))
+    keep = np.flatnonzero(valid[:, CURRENT:].any(1))  # only objects present now or later are published
     valid = valid[keep]
     xyz = to_local(seg["xyz"][keep][:, idx].copy())
     vel = seg["vel"][keep][:, idx] @ R.T
@@ -210,9 +211,8 @@ def build_scenario(seg, anchor, step):
     movable = types != STATIC
     to_predict = np.flatnonzero(movable & ~is_operator & valid[:, CURRENT] & valid[:, CURRENT + 1:].any(1))
 
-    T = np.eye(4)
-    T[:2, :2] = R.T
-    T[:3, 3] = origin
+    T = seg["ego_T"][anchor].copy()
+    T[:3, 3] = t_cur - R_cur @ lift
     tracks = dict(id=seg["track_ids"][keep], category=seg["categories"][keep], object_type=types,
                   length=seg["dims"][keep, 0], width=seg["dims"][keep, 1], height=seg["dims"][keep, 2],
                   is_stationary=is_stationary, is_operator=is_operator,

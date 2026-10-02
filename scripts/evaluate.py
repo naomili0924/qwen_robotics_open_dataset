@@ -34,7 +34,8 @@ def _score(i):
         pred = _ctx["pred"][row["scenario_id"]]
     else:
         pred = ev.BASELINES[_ctx["baseline"]](row)
-    res = ev.evaluate_scenario(row, pred, radius=_ctx["radius"], use_map=not _ctx["no_map"])
+    res = ev.evaluate_scenario(row, pred, radius=_ctx["radius"], use_map=not _ctx["no_map"],
+                               use_lidar=not _ctx["no_lidar"])
     res["num_pedestrians"] = row["num_pedestrians"]
     return res
 
@@ -51,6 +52,7 @@ def main():
     what.add_argument("--baseline", choices=sorted(ev.BASELINES))
     ap.add_argument("--radius", type=float, default=ev.DEFAULT_RADIUS, help="agent radius [m]")
     ap.add_argument("--no-map", action="store_true", help="ignore the lidar static map")
+    ap.add_argument("--no-lidar", action="store_true", help="skip the per-step lidar point check")
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--out", help="write per-scenario results to this JSON file")
     args = ap.parse_args()
@@ -59,8 +61,9 @@ def main():
         ds = load_dataset("parquet", data_files=sorted(glob.glob(f"{args.data}/{args.split}-*.parquet")), split="train")
     else:
         ds = load_dataset(args.repo, args.config, split=args.split)
+    ds = ds.remove_columns([c for c in ("past_images", "camera") if c in ds.column_names])  # not needed, slow to decode
     _ctx.update(ds=ds, pred=json.load(open(args.pred)) if args.pred else None, baseline=args.baseline,
-                radius=args.radius, no_map=args.no_map)
+                radius=args.radius, no_map=args.no_map, no_lidar=args.no_lidar)
     with ProcessPoolExecutor(args.workers) as ex:  # fork: workers inherit _ctx
         results = [r for r in ex.map(_score, range(len(ds)), chunksize=16) if r is not None]
     if not results:

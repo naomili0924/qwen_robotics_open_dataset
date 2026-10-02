@@ -5,6 +5,8 @@ Each lidar sweep is turned into a small world-axis-aligned tri-state grid
 grid is aligned to the same world axes and snapped to the same 0.1 m lattice,
 grids from different frames can be merged with pure integer shifts.
 """
+import zlib
+
 import numpy as np
 from scipy import ndimage
 
@@ -136,3 +138,43 @@ def frame_grid(points, R, t, lidar_height):
     """
     _, fi, fj, h, origin = point_heights(points, R, t, lidar_height)
     return rasterize(fi, fj, h), origin
+
+
+POINT_RANGE = 28.0        # keep points within this horizontal range of the sensor [m]
+POINT_MAX_H = 3.0         # ... and no higher than this above the ground
+POINT_GROUND_H = 0.15     # points lower than this above the ground are flagged as ground
+OBSTACLE_VOXEL = 0.1      # one point is kept per voxel of this size for non-ground points [m] ...
+GROUND_VOXEL = 0.25       # ... and per horizontal cell of this size for ground points
+
+
+def downsample_points(xyz, h):
+    """Thin a sweep to the points worth publishing.
+
+    xyz: (N, 3) sensor-frame points, h: their height above the estimated ground
+    (as returned by point_heights for the same points).  Returns (xyz float32 (M, 3),
+    is_ground bool (M,)).
+    """
+    keep = (np.linalg.norm(xyz[:, :2], axis=1) <= POINT_RANGE) & (h <= POINT_MAX_H)
+    xyz, h = xyz[keep], h[keep]
+    ground = h < POINT_GROUND_H
+    out = []
+    for mask, voxel, dims in ((~ground, OBSTACLE_VOXEL, 3), (ground, GROUND_VOXEL, 2)):
+        p = xyz[mask]
+        cell = np.floor(p[:, :dims] / voxel).astype(np.int64)
+        _, first = np.unique(cell, axis=0, return_index=True)
+        out.append(p[np.sort(first)])
+    return (np.concatenate(out).astype(np.float32),
+            np.r_[np.zeros(len(out[0]), bool), np.ones(len(out[1]), bool)])
+
+
+def pack_points(xyz, is_ground):
+    """Compress downsample_points output: centimetre int16 coordinates + packed flags."""
+    return (zlib.compress(np.round(xyz * 100).astype(np.int16).tobytes(), 3),
+            zlib.compress(np.packbits(is_ground).tobytes(), 3), len(xyz))
+
+
+def unpack_points(packed):
+    """Inverse of pack_points: (xyz float32 metres (M, 3), is_ground bool (M,))."""
+    xyz_blob, ground_blob, n = packed
+    xyz = np.frombuffer(zlib.decompress(xyz_blob), np.int16).reshape(-1, 3).astype(np.float32) / 100
+    return xyz, np.unpackbits(np.frombuffer(zlib.decompress(ground_blob), np.uint8))[:n].astype(bool)

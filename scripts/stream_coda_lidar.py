@@ -3,8 +3,9 @@
 
 The ego-motion-compensated sweeps (3d_comp, ~40 GB compressed) are never stored:
 each worker fetches one contiguous byte range of the zip, decodes the sweeps in
-memory, writes a compressed tri-state grid per frame (see hnod/lidar_bev.py) and
-discards the points.  Output is ~0.3 GB.  Re-running skips finished batches.
+memory and writes, per frame, a compressed tri-state grid (batch_*.pkl) and a
+voxel-downsampled point cloud with a ground flag (points_*.pkl); see
+hnod/lidar_bev.py.  Output is a few GB.  Re-running skips finished batches.
 
 Usage:
     python scripts/stream_coda_lidar.py --raw data/raw/coda --out data/interim/coda_bev
@@ -54,6 +55,22 @@ def extract(buf, base, m):
     return zlib.decompress(data, -15) if method == 8 else data
 
 
+def make_batches(members):
+    """Split archive members into runs of at most BATCH_BYTES of contiguous archive bytes."""
+    members = sorted(members, key=lambda m: m["offset"])
+    batches, cur, start = [], [], None
+    for m in members:
+        if cur and (m["offset"] + m["csize"] - start > BATCH_BYTES):
+            batches.append(cur)
+            cur = []
+        if not cur:
+            start = m["offset"]
+        cur.append(m)
+    if cur:
+        batches.append(cur)
+    return batches
+
+
 def semantic_stats(raw, seq, frame, idx, h):
     """Per terrain class: how many labelled points we call ground / obstacle.
 
@@ -80,7 +97,7 @@ def run_batch(args):
     lo = members[0]["offset"]
     hi = max(m["offset"] + m["csize"] for m in members) + LOCAL_HEADER_SLACK
     buf = fetch_range(lo, hi)
-    poses, frames, stats = {}, [], []
+    poses, frames, stats, points = {}, [], [], {}
     for m in members:
         seq, frame = m["seq"], m["frame"]
         if seq not in poses:
@@ -90,9 +107,12 @@ def run_batch(args):
         idx, fi, fj, h, origin = lidar_bev.point_heights(pts, T[:3, :3], T[:3, 3], LIDAR_HEIGHT)
         grid = lidar_bev.rasterize(fi, fj, h)
         frames.append((seq, frame, origin, zlib.compress(grid.tobytes(), 6)))
+        points[(seq, frame)] = lidar_bev.pack_points(*lidar_bev.downsample_points(pts[idx, :3], h))
         s = semantic_stats(raw, seq, frame, idx, h)
         if s:
             stats.append(s)
+    with open(Path(out) / f"points_{bid:04d}.pkl", "wb") as f:
+        pickle.dump(points, f)
     tmp = dst.with_suffix(".tmp")
     with open(tmp, "wb") as f:
         pickle.dump(dict(frames=frames, stats=stats), f)
@@ -118,18 +138,7 @@ def main():
         if mt and mt.group(1) in annotated:
             members.append(dict(name=i.filename, offset=i.header_offset, csize=i.compress_size,
                                 seq=int(mt.group(1)), frame=int(mt.group(2))))
-    members.sort(key=lambda m: m["offset"])
-
-    batches, cur, start = [], [], None
-    for m in members:
-        if cur and (m["offset"] + m["csize"] - start > BATCH_BYTES):
-            batches.append(cur)
-            cur = []
-        if not cur:
-            start = m["offset"]
-        cur.append(m)
-    if cur:
-        batches.append(cur)
+    batches = make_batches(members)
     print(f"{len(members)} sweeps in {len(batches)} batches")
 
     done = 0

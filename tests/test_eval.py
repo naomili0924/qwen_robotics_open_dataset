@@ -103,3 +103,44 @@ def test_baseline_shapes():
     for fn in ev.BASELINES.values():
         assert fn(row).shape == (N_FUTURE, 2)
     assert np.allclose(ev.baseline_constant_velocity(row), ev.baseline_expert(row))
+
+
+def to_new_layout(row, lidar=None):
+    """Same scenario in the published layout: tracks cut to current + future, optional lidar."""
+    tr = row.pop("tracks")
+    row["future_tracks"] = {k: ([s[CURRENT:] for s in v] if v and isinstance(v[0], list) else v) for k, v in tr.items()}
+    row["future_lidar"] = lidar
+    return row
+
+
+def lidar_with(points_by_step):
+    """points_by_step: {future step: [(x, y, z, label)]} in metres; other steps are empty."""
+    out = {k: [[] for _ in range(N_FUTURE + 1)] for k in ("x", "y", "z", "label", "track")}
+    for step, pts in points_by_step.items():
+        for x, y, z, label in pts:
+            for k, v in zip(("x", "y", "z", "label", "track"), (x * 100, y * 100, z * 100, label, -1)):
+                out[k][step].append(int(round(v)))
+    return out
+
+
+def test_new_layout_gives_the_same_verdicts():
+    t = (np.arange(N_STEPS) - CURRENT) / 2.0
+    crossing = dict(type="PEDESTRIAN", x=np.full(N_STEPS, 2.5), y=(t - 2.5) * 1.0)
+    old = make_row([crossing])
+    res_old = ev.evaluate_scenario(old, straight(old))
+    new = to_new_layout(make_row([crossing]))
+    res_new = ev.evaluate_scenario(new, straight(new))
+    assert res_new["collided_dynamic"] and res_new["first_collision_s"] == res_old["first_collision_s"]
+
+
+def test_lidar_points_block_only_when_and_where_they_are():
+    wall = [(3.0, dy, 1.0, 1) for dy in (-0.1, 0.0, 0.1)]           # static points at x = 3 m, chest height
+    row = to_new_layout(make_row(), lidar_with({6: wall}))           # ego is at x = 3 m at step 6 (2 Hz, 1 m/s)
+    assert ev.evaluate_scenario(row, straight(row))["collided_lidar"]
+    row = to_new_layout(make_row(), lidar_with({2: wall}))           # same points, but only seen at step 2
+    assert not ev.evaluate_scenario(row, straight(row))["collided_lidar"]
+    ground = [(3.0, dy, 0.02, 0) for dy in (-0.1, 0.0, 0.1)]
+    overhead = [(3.0, dy, 2.5, 1) for dy in (-0.1, 0.0, 0.1)]
+    row = to_new_layout(make_row(), lidar_with({6: ground + overhead}))
+    res = ev.evaluate_scenario(row, straight(row))
+    assert not res["collided_lidar"] and not res["collided"]

@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 import numpy as np
+import yaml
 from scipy.spatial.transform import Rotation
 
 # Height of the OS1 lidar origin above the ground the robot stands on [m].
@@ -96,3 +97,20 @@ def load_segments(raw, seq, max_gap=2):
                 tr["valid"][i] = True
         segments.append(seg)
     return segments
+
+
+def load_camera(raw, seq, camera="cam0"):
+    """Calibration of a rectified camera (the images under 2d_rect/).
+
+    Returns dict(name, width, height, K (3, 3), T_camera_from_ego (4, 4)); the ego
+    frame is the OS1 lidar frame, the camera frame has +z along the optical axis.
+    CODa's own lidar-to-pixel matrix equals K @ T_camera_from_ego[:3].
+    """
+    d = Path(raw) / f"calibrations/{seq}"
+    intr = yaml.safe_load(open(d / f"calib_{camera}_intrinsics.yaml"))
+    extr = yaml.safe_load(open(d / f"calib_os1_to_{camera}.yaml"))["extrinsic_matrix"]
+    rect = np.eye(4)
+    rect[:3, :3] = np.array(intr["rectification_matrix"]["data"]).reshape(3, 3)
+    return dict(name=camera, width=int(intr["image_width"]), height=int(intr["image_height"]),
+                K=np.array(intr["projection_matrix"]["data"]).reshape(3, 4)[:, :3],
+                T_camera_from_ego=rect @ np.array(extr["data"]).reshape(4, 4))

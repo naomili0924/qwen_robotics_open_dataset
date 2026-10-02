@@ -12,7 +12,10 @@ def frame(t, seq, objs, ego_x=0.0):
     """objs: list of (name, id, x, y) in the ego frame; ego sits at (ego_x, 0) heading +x."""
     n = len(objs)
     return dict(timestamp=int(t * 1e6), seq_token=seq, map_token="m", hs64_path=f"/d/hs64/{t}.bin",
-                hs2global=np.eye(4), hs2livox=np.eye(4), ego2global_rotation=np.eye(3), ego2global_translation=np.array([ego_x, 0.0, 0.0]),
+                hs2global=np.eye(4), hs2livox=np.eye(4), ego2global_rotation=np.eye(3),
+                images=dict(cams=dict(CAM_FRONT=dict(
+                    data_path=f"/d/images/0/{t}.jpg", cam_intrinsic=np.eye(3).tolist(), cam_dist=[[0.0] * 5],
+                    img_width=1920, img_height=1080, sensor2ego_rotation=np.eye(3), sensor2ego_translation=np.zeros(3)))), ego2global_translation=np.array([ego_x, 0.0, 0.0]),
                 annos=dict(name=np.array([o[0] for o in objs]), id=np.array([o[1] for o in objs]),
                            location=np.array([[o[2], o[3], 0.0] for o in objs]).reshape(n, 3),
                            dimensions=np.tile([0.6, 0.5, 1.7], (n, 1)), rotation_y=np.zeros(n)))

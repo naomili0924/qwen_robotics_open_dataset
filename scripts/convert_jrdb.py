@@ -2,9 +2,9 @@
 """Convert JRDB 3D pedestrian labels + odometry into scenario Parquet files.
 
 STATUS: untested on real JRDB labels - see hnod/jrdb.py.  Produces tracks only
-(JRDB annotates pedestrians but no static objects, and this script does not
-build a lidar map), so `static_map` / `observed_map` are empty and only
-agent collisions can be evaluated.
+(JRDB annotates pedestrians but no static objects, and this script adds neither
+images nor lidar), so `past_images`, `future_lidar` and `static_map` are empty
+and only agent collisions can be evaluated.
 
 Usage:
     python scripts/convert_jrdb.py --labels <jrdb>/train/labels/labels_3d \
@@ -38,7 +38,7 @@ def main():
         seg = scenario.clean_segment(jrdb.load_segment(args.labels, args.odometry, seq), lambda c: scenario.PEDESTRIAN)
         for name, (step, stride) in CONFIGS.items():
             for a in scenario.window_anchors(seg, step, stride):
-                rows[name].append(to_row(scenario.build_scenario(seg, a, step), None, None, float("nan")))
+                rows[name].append(to_row(scenario.build_scenario(seg, a, step), None, float("nan")))
         print(seq, {n: len(r) for n, r in rows.items()})
 
     for name, r in rows.items():
