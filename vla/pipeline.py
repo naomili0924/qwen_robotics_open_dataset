@@ -9,6 +9,7 @@
     pipe.save_pretrained("runs/flow_dit/final")
 
     pipe = NavigationPipeline.from_pretrained("runs/flow_dit/final")
+    pipe.fit_rl(algo="grpo", steps=300, run="runs/grpo")        # PPO / GRPO with the collision evaluator as reward
     pipe.add_task("collision")                                  # new head on the learnt embedding
     pipe.freeze_backbone()
     pipe.fit(steps=300, run="runs/transfer_collision")          # trains the new head only
@@ -68,6 +69,15 @@ class NavigationPipeline:
         for k, v in options.items():
             setattr(self.cfg, k, v)
         train(self.cfg, self.model, train_ds, val_ds)
+        return self
+
+    def fit_rl(self, algo="grpo", **options):
+        """PPO / GRPO fine-tuning with vla.rl; `options` override Config fields (steps, run, reward, group_size, ...)."""
+        from vla.rl import train_rl
+        self.cfg.algo = algo
+        for k, v in options.items():
+            setattr(self.cfg, k, v)
+        train_rl(self.cfg, self.model)
         return self
 
     def evaluate(self, split="validation", scenarios=None, batches=None):

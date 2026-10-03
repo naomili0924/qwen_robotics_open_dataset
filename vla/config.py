@@ -43,6 +43,19 @@ class Config:
     kinematic_input: bool = True        # feed past positions / speed / goal to the heads as numbers, not only as prompt text
     init_from: str = ""                 # load weights (adapters + heads) from this checkpoint, start a fresh optimiser
     freeze_backbone: bool = False       # after loading: train heads only (transfer test of a learnt embedding)
+    # --- reinforcement learning (vla.rl)
+    algo: str = "grpo"                  # grpo | ppo
+    group_size: int = 8                 # trajectories sampled per scenario
+    rl_epochs: int = 1                  # optimisation passes over each sampled batch
+    clip_eps: float = 0.2               # PPO/GRPO ratio clipping
+    kl_beta: float = 0.04               # weight of the KL penalty against the reference policy
+    bc_weight: float = 0.0              # add this much supervised (imitation) loss to the RL objective
+    value_coef: float = 0.5             # PPO: weight of the value-head loss
+    reward: str = "collision=1,goal=0.5,imitation=0.2,smooth=0.1"  # weighted sum of vla.rewards terms
+    rl_lr_head: float = 1e-5            # RL learning rates: policy steps must stay small relative to the action noise
+    rl_lr_backbone: float = 1e-5
+    rl_std_init: float = 0.1            # regression policy: initial action std (normalised units)
+    rl_flow_noise: float = 0.3          # flow policy: diffusion coefficient of the sampling SDE
     # --- optimisation
     batch_size: int = 4
     grad_accum: int = 4

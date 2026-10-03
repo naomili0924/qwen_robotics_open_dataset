@@ -93,6 +93,8 @@ class RegressionHead(nn.Module):
         self.features = Features(in_dim, cfg)
         out = cfg.horizon * cfg.action_dim
         self.net = mlp([self.features.width] + [cfg.head_dim * 2] * cfg.head_layers + [cfg.modes * out + cfg.modes])
+        # action noise of the stochastic policy used by RL (normalised units); unused by the supervised loss
+        self.log_std = nn.Parameter(torch.full((cfg.horizon, cfg.action_dim), math.log(cfg.rl_std_init)))
 
     def _forward(self, cond):
         out = self.net(self.features(cond))
@@ -113,6 +115,28 @@ class RegressionHead(nn.Module):
     def predict(self, cond):
         traj, logits = self._forward(cond)
         return traj[torch.arange(len(traj)), logits.argmax(1)]
+
+    # --- stochastic policy for RL: a Gaussian (mixture, if modes > 1) around the predicted trajectories
+    def _mixture_log_prob(self, traj, logits, actions):
+        """log p(actions) under the mixture; traj (B,M,T,D), logits (B,M), actions (n,B,T,D) -> (n,B)."""
+        log_std = self.log_std
+        diff = actions[:, :, None] - traj[None]                                  # (n,B,M,T,D)
+        comp = (-0.5 * (diff / log_std.exp()) ** 2 - log_std - 0.5 * math.log(2 * math.pi)).sum((3, 4))
+        return torch.logsumexp(comp + F.log_softmax(logits, 1)[None], dim=2)
+
+    def sample(self, cond, n):
+        """n trajectories per scenario -> dict(actions (n,B,T,D), logp (n,B))."""
+        with torch.no_grad():
+            traj, logits = self._forward(cond)
+            B = traj.shape[0]
+            mode = torch.distributions.Categorical(logits=logits).sample((n,))      # (n,B)
+            mean = traj[torch.arange(B)[None].expand(n, -1), mode]                  # (n,B,T,D)
+            actions = mean + self.log_std.exp() * torch.randn_like(mean)
+            return dict(actions=actions, logp=self._mixture_log_prob(traj, logits, actions))
+
+    def log_prob(self, cond, sample):
+        traj, logits = self._forward(cond)
+        return self._mixture_log_prob(traj, logits, sample["actions"])
 
 
 def timestep_embedding(t, dim):
@@ -235,7 +259,8 @@ class FlowHead(nn.Module):
         return F.mse_loss(v, target - noise)
 
     @torch.no_grad()
-    def sample(self, cond, generator=None):
+    def sample_ode(self, cond, generator=None):
+        """Deterministic Euler integration of the learnt flow (used for inference)."""
         B = cond["summary"].shape[0]
         feat = self.denoiser.features(cond)
         x = torch.randn(B, self.cfg.horizon, self.cfg.action_dim, device=cond["summary"].device, generator=generator)
@@ -245,14 +270,69 @@ class FlowHead(nn.Module):
             x = x + self.denoiser(x, t, cond, feat) / n
         return x
 
+    # --- stochastic policy for RL: the ODE turned into an SDE with the same marginals
+    # (dx = [v - (s^2/2) (x - t v) / (1 - t)] dt + s dW, s = rl_flow_noise), so every Euler step
+    # is a Gaussian transition whose log-probability is exact.  Same idea as Flow-GRPO.
+    def _sde_step(self, x, t, cond, feat):
+        n = self.cfg.flow_steps
+        dt = 1.0 / n
+        v = self.denoiser(x, torch.full((x.shape[0],), t, device=x.device), cond, feat)
+        sigma = self.cfg.rl_flow_noise
+        drift = v - 0.5 * sigma ** 2 * (x - t * v) / max(1.0 - t, 0.05)
+        return x + drift * dt, sigma * math.sqrt(dt)
+
+    def _chain_log_prob(self, cond, chain, feat=None):
+        """Sum of per-step Gaussian log-probs along a sampled chain (n+1, B, T, D) -> (B,)."""
+        feat = self.denoiser.features(cond) if feat is None else feat
+        logp = 0.0
+        for k in range(self.cfg.flow_steps):
+            mean, std = self._sde_step(chain[k], k / self.cfg.flow_steps, cond, feat)
+            logp = logp + (-0.5 * ((chain[k + 1] - mean) / std) ** 2 - math.log(std) - 0.5 * math.log(2 * math.pi)).sum((1, 2))
+        return logp
+
+    def sample(self, cond, n):
+        """n SDE chains per scenario -> dict(actions (n,B,T,D), chain (n, steps+1, B, T, D), logp (n,B))."""
+        with torch.no_grad():
+            feat = self.denoiser.features(cond)
+            B = cond["summary"].shape[0]
+            chains, logps = [], []
+            for _ in range(n):
+                x = torch.randn(B, self.cfg.horizon, self.cfg.action_dim, device=cond["summary"].device)
+                states, logp = [x], 0.0
+                for k in range(self.cfg.flow_steps):
+                    mean, std = self._sde_step(x, k / self.cfg.flow_steps, cond, feat)
+                    x = mean + std * torch.randn_like(mean)
+                    logp = logp + (-0.5 * ((x - mean) / std) ** 2 - math.log(std) - 0.5 * math.log(2 * math.pi)).sum((1, 2))
+                    states.append(x)
+                chains.append(torch.stack(states))
+                logps.append(logp)
+            chain = torch.stack(chains)
+            return dict(actions=chain[:, -1], chain=chain, logp=torch.stack(logps))
+
+    def log_prob(self, cond, sample):
+        feat = self.denoiser.features(cond)
+        return torch.stack([self._chain_log_prob(cond, c, feat) for c in sample["chain"]])
+
     @torch.no_grad()
     def predict(self, cond):
-        samples = torch.stack([self.sample(cond) for _ in range(self.cfg.flow_samples)])  # (S, B, T, D)
+        samples = torch.stack([self.sample_ode(cond) for _ in range(self.cfg.flow_samples)])  # (S, B, T, D)
         if self.cfg.flow_samples == 1:
             return samples[0]
         # medoid: the sample closest to all others, a point estimate that stays on one mode
         d = (samples[:, None] - samples[None]).flatten(3).norm(dim=3).sum(1)  # (S, B)
         return samples[d.argmin(0), torch.arange(samples.shape[1])]
+
+
+class ValueHead(nn.Module):
+    """Scalar state value on the embedding; the PPO baseline."""
+
+    def __init__(self, in_dim, cfg):
+        super().__init__()
+        self.features = Features(in_dim, cfg)
+        self.net = mlp([self.features.width, cfg.head_dim, 1])
+
+    def forward(self, cond):
+        return self.net(self.features(cond))[:, 0]
 
 
 def build_head(in_dim, cfg):

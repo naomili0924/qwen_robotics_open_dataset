@@ -173,6 +173,8 @@ def stage_pipeline(cfg, steps=20):
     again.fit(run=str(run / "pipe_b"), steps=steps, limit_train=16, limit_val=8, eval_every=steps, eval_batches=2,
               eval_scenarios=8, log_every=5, warmup=2, batch_size=2, grad_accum=1)
     print("evaluate:", again.evaluate(split=cfg.val_split, scenarios=8, batches=4))
+    again.fit_rl(algo="grpo", run=str(run / "pipe_c"), steps=4, group_size=4, limit_train=8, limit_val=8, eval_every=4,
+                 eval_batches=1, eval_scenarios=4, log_every=2, warmup=1, batch_size=2)
 
     rows = load_split(cfg, cfg.val_split)
     row = rows[0]

@@ -115,7 +115,7 @@ class NavPolicy(nn.Module):
         torch.save(self.head.state_dict(), d / "head.pt")
         torch.save({k: v.state_dict() for k, v in self.aux.items()}, d / "aux_heads.pt")
         if self.cfg.backbone_mode == "lora":
-            self.backbone.save_pretrained(d / "lora")
+            self.backbone.save_pretrained(d / "lora", selected_adapters=["default"])
         elif self.cfg.backbone_mode == "full":
             torch.save(self.backbone.state_dict(), d / "backbone.pt")
         self.cfg.save(d / "config.json")
@@ -123,7 +123,9 @@ class NavPolicy(nn.Module):
     def load(self, directory, strict=True):
         """Load weights saved by `save`.  strict=False skips heads that do not exist in the checkpoint."""
         d = Path(directory)
-        self.head.load_state_dict(torch.load(d / "head.pt", map_location=self.device))
+        missing, unexpected = self.head.load_state_dict(torch.load(d / "head.pt", map_location=self.device), strict=False)
+        if unexpected or [k for k in missing if k != "log_std"]:
+            raise RuntimeError(f"action head mismatch for {d}: missing {missing}, unexpected {unexpected}")
         aux = torch.load(d / "aux_heads.pt", map_location=self.device) if (d / "aux_heads.pt").exists() else {}
         for name, head in self.aux.items():
             if name in aux:

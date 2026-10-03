@@ -156,6 +156,34 @@ Checkpoints hold the heads, the LoRA adapter (or full backbone weights) and the 
 `collided_lidar`, ADE, FDE) plus each task's own. On one H100, Qwen2.5-VL-3B with LoRA at 448 px per
 frame takes about 13 GB at batch 4 and 2 s per step.
 
+### PPO / GRPO fine-tuning
+
+`vla.rl` fine-tunes a policy with reinforcement learning, TRL-style, using the collision evaluator as the
+reward. One scenario is one decision (a whole trajectory), i.e. the single-step setting PPO/GRPO are used
+in for language models:
+
+- **Policy distribution.** Regression head: a Gaussian around the predicted trajectory (a mixture if
+  `--modes K`) with a learnable std. Flow head: the ODE sampler is replaced by an SDE with the same
+  marginals (as in Flow-GRPO), so every denoising step is a Gaussian transition with an exact log-prob.
+- **Rollout.** `--group-size` trajectories per scenario, each scored by `vla/rewards.py`:
+  `collision` (+1 / -1 from the evaluator, lidar check included), `goal`, `imitation`, `smooth`,
+  `progress`; combine with `--reward "collision=1,goal=0.5,imitation=0.2"`. Adding a term is one function.
+- **Update.** GRPO normalises rewards within each scenario's group; PPO uses a value head on the embedding.
+  Both use the clipped ratio, a KL penalty against the reference policy (the weights RL started from: a
+  frozen copy of the head and, for LoRA, a frozen snapshot adapter) and an optional supervised term
+  (`--bc-weight`). Dropout is switched off during RL so rollout and update log-probs agree.
+
+```bash
+python -m vla.rl --algo grpo --init-from runs/flow_dit/last --head flow --denoiser dit \
+    --group-size 8 --reward "collision=1,goal=0.5,imitation=0.2,smooth=0.1" --run runs/grpo --steps 300
+python -m vla.rl --algo ppo  --init-from runs/sft/last --head regression --modes 3 --bc-weight 0.5 --run runs/ppo
+```
+
+or `pipe.fit_rl(algo="grpo", steps=300, run="runs/grpo")`. RL uses its own learning rates
+(`--rl-lr-head`, `--rl-lr-backbone`, default 1e-5): the SFT rates make a narrow Gaussian policy jump
+to KL values in the hundreds within a few steps. Logged per step: mean reward and each term, in-group
+reward std, KL, clip fraction, value loss; the usual validation metrics at `--eval-every`.
+
 ### Is the embedding good enough for an MLP head?
 
 `vla.probe` answers that before any training. It freezes the backbone, extracts pooled features at
@@ -192,7 +220,7 @@ Qwen2.5-VL-3B with LoRA at 448 px per frame takes about 13 GB at batch 4 and 2 s
 | `hnod/io.py` | Parquet schema |
 | `hnod/eval.py` | collision evaluator and baselines |
 | `scripts/` | download, stream, convert, evaluate, visualise, publish |
-| `vla/` | policy training: `data.py` prompts and targets, `heads.py` regression / flow heads with MLP or DiT denoisers, `model.py` backbone + LoRA, `train.py`, `predict.py`, `debug.py` pipeline checks, `probe.py` representation probing |
+| `vla/` | policy training: `data.py` prompts and targets, `heads.py` regression / flow heads with MLP or DiT denoisers (+ stochastic policies), `model.py` backbone + LoRA, `tasks.py` auxiliary heads, `train.py` supervised, `rl.py` PPO / GRPO with `rewards.py`, `pipeline.py` the front end, `predict.py`, `debug.py` pipeline checks, `probe.py` representation probing |
 
 Adding another source means writing a reader that returns segments in the layout documented in
 `hnod.coda.load_segments`; everything downstream is shared.
