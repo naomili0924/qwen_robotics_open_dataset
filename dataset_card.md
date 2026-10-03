@@ -251,7 +251,7 @@ differences smaller than that are not meaningful.
 |---|---|---|
 | RoboSense | converted | [Jinyan0924/qwen_robotics_open_dataset_robosense](https://huggingface.co/datasets/Jinyan0924/qwen_robotics_open_dataset_robosense) |
 | SiT | blocked | The download link is issued only after signing the authors' terms-of-use form. Their README says CC BY-NC-ND (no derivatives) while the form says CC BY-NC-SA, so whether converted data may be shared needs their confirmation. |
-| JRDB | not yet | Has 3D pedestrian tracks at 15 Hz, but download needs a registered account and the robot's odometry is only in the rosbags. Pedestrians only, and the robot is stationary in 13 of 27 training sequences. |
+| JRDB | converted | [Jinyan0924/qwen_robotics_open_dataset_jrdb](https://huggingface.co/datasets/Jinyan0924/qwen_robotics_open_dataset_jrdb) (pedestrians only; moving-robot sequences; odometry refined by scan matching) |
 | SCAND | no | No object labels of any kind (the authors say so), only coarse per-trajectory tags, so there is no ground truth for future obstacles. |
 | MuSoHu | no | Same: no boxes or tracks. Recorded from a helmet on a walking person. |
 

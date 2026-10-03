@@ -10,7 +10,7 @@ from .points import scenario_points
 
 
 def segment_rows(seg, bev, step, stride, map_context_frames, min_static_span, close_cells=5,
-                 points=None, camera=None):
+                 points=None, camera=None, min_future_distance=0.0):
     """Rows for all scenarios of one cleaned segment (see scenario.clean_segment).
 
     bev: per-frame lidar grids as accepted by maps.masked_frame_grids ({} for none).
@@ -19,13 +19,17 @@ def segment_rows(seg, bev, step, stride, map_context_frames, min_static_span, cl
     static.  close_cells: see maps.compose_map.
     points: per-frame point store for points.scenario_points (needs seg["point_keys"]).
     camera: callable(seg, sc) -> (image bytes for steps 0..current, camera dict), using
-    seg["image_paths"].  A scenario is skipped if a requested image or sweep is missing.
+    seg["image_paths"].  A scenario is skipped if a requested image or sweep is missing,
+    or if the robot covers less than min_future_distance metres over the future steps.
     """
     grids = maps.masked_frame_grids(seg, bev) if bev else {}
     F = len(seg["frames"])
     rows = []
     for a in scenario.window_anchors(seg, step, stride):
         sc = scenario.build_scenario(seg, a, step)
+        future = np.stack([sc["ego"]["x"], sc["ego"]["y"]], 1)[scenario.CURRENT:]
+        if np.linalg.norm(np.diff(future, axis=0), axis=1).sum() < min_future_distance:
+            continue
         images = cam = lidar = static_map = None
         if camera is not None:
             images, cam = camera(seg, sc)

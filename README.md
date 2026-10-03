@@ -15,6 +15,7 @@ Data (one Hugging Face dataset per source; each card documents columns, frames a
 
 - CODa: <https://huggingface.co/datasets/Jinyan0924/qwen_robotics_open_dataset>
 - RoboSense: <https://huggingface.co/datasets/Jinyan0924/qwen_robotics_open_dataset_robosense>
+- JRDB: <https://huggingface.co/datasets/Jinyan0924/qwen_robotics_open_dataset_jrdb>
 
 ![Example scenarios](figures/coda/coda_2hz_examples.png)
 
@@ -25,7 +26,7 @@ Data (one Hugging Face dataset per source; each card documents columns, frames a
 | CODa (UT Campus Object Dataset) | converted | 10 Hz labels. 1,955 scenarios at 2 Hz (5 s + 5 s), 2,603 at 10 Hz (1 s + 1 s) |
 | RoboSense | converted | 1 Hz labels, so one config at 1 Hz (10 s + 10 s). Cars, pedestrians and cyclists only |
 | SiT | blocked | download link is issued only after signing the authors' terms-of-use form; licence statements conflict on whether converted data may be shared |
-| JRDB | draft converter, untested | needs a registered JRDB account to download labels; `scripts/convert_jrdb.py` has only been run on synthetic labels |
+| JRDB | converted | 15 Hz labels; 428 scenarios at 2.5 Hz (4 s + 4 s), 389 at 5 Hz, moving-robot sequences only. Pedestrians only; odometry refined by lidar scan matching |
 | SCAND | not convertible as ground truth | no object boxes or tracks, so there are no future obstacle positions to score against |
 | MuSoHu | not convertible as ground truth | no object boxes or tracks; recorded from a helmet on a walking person |
 
@@ -85,6 +86,21 @@ python scripts/convert_coda.py --raw data/raw/coda --bev data/interim/coda_lidar
     --images data/interim/coda_images --out data/hf
 python scripts/visualize.py --data data/hf/coda_2hz --split test --num 3 --panels --out figures/sample.png
 python -m pytest tests
+```
+
+## Rebuild the JRDB conversion
+
+The JRDB train archive (75 GB, single zip) is read over HTTP range requests; about 14 GB of it is
+needed (labels, timestamps, calibration, the forward camera, both lidars). The robot's poses are not in
+the archive: the wheel odometry published with Google's Human Scene Transformer is the starting point
+and is refined by lidar scan matching (needs `open3d`, `pypcd4`).
+
+```bash
+python scripts/download_jrdb.py --out data/raw/jrdb --groups labels/labels_3d,timestamps,calibration,images/image_0,pointclouds/upper_velodyne,pointclouds/lower_velodyne
+curl -O https://storage.googleapis.com/gresearch/human_scene_transformer/odometry.zip && unzip -q odometry.zip -d data/raw/jrdb_odometry_src
+python scripts/refine_jrdb_odometry.py --raw data/raw/jrdb --odometry data/raw/jrdb_odometry_src/odometry --out data/raw/jrdb_odometry_icp
+python scripts/reduce_jrdb.py --raw data/raw/jrdb --odometry data/raw/jrdb_odometry_icp --out data/interim/jrdb_lidar --images-out data/interim/jrdb_images
+python scripts/convert_jrdb.py --raw data/raw/jrdb --odometry data/raw/jrdb_odometry_icp --bev data/interim/jrdb_lidar --images data/interim/jrdb_images --out data/hf_jrdb
 ```
 
 ## Rebuild the RoboSense conversion
@@ -212,6 +228,7 @@ Qwen2.5-VL-3B with LoRA at 448 px per frame takes about 13 GB at batch 4 and 2 s
 | Path | Purpose |
 |---|---|
 | `hnod/coda.py`, `hnod/robosense.py`, `hnod/jrdb.py` | source readers: labelled segments with world-frame ego poses, boxes and camera calibration |
+| `scripts/refine_jrdb_odometry.py` | lidar scan matching to replace JRDB's drifting wheel odometry |
 | `hnod/scenario.py` | track clean-up, operator detection, windowing into ego-centric scenarios |
 | `hnod/lidar_bev.py` | lidar sweep to ground/obstacle grid and thinned, ground-flagged points |
 | `hnod/points.py` | per-step point clouds in the scenario frame, labelled ground / static / dynamic |
@@ -227,5 +244,5 @@ Adding another source means writing a reader that returns segments in the layout
 
 ## License
 
-Code: MIT (see `LICENSE`). Converted data: CC BY-NC-SA 4.0, inherited from CODa and RoboSense; cite the
-source dataset when using it (citations in the dataset cards).
+Code: MIT (see `LICENSE`). Converted data: CC BY-NC-SA 4.0 for CODa and RoboSense, CC BY-NC-SA 3.0 for
+JRDB, inherited from the sources; cite the source dataset when using it (citations in the dataset cards).

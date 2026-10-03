@@ -9,3 +9,5 @@ tqdm
 requests
 remotezip
 pytest
+pypcd4
+open3d
