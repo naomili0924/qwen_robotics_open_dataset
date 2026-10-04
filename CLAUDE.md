@@ -30,6 +30,12 @@ worth it?) and how to build an evaluation set. It does not have to succeed; it h
 - **Evaluation data: one suite of at most 400 scenarios in total**, drawn from across the source datasets
   (the owner confirmed: 400 total, not 400 per source). Stratify it over sources and pick scenarios where
   naive baselines fail, so the overall comparison has power; per-source numbers are indicative only.
+- **The target robot walks slowly**, much slower than a person (owner, 2026-10-04; exact speed not given
+  yet, assume about 0.5 m/s until told). Do not bake a source's speed into the targets: store raw metric
+  poses with timestamps and each sample's source speed, and derive waypoints at load time by distance
+  along the path (or at the target speed). The simulator generator's 1.0 m/s must become a parameter.
+  Evaluation scenarios should come from slow platforms or be scored in a way that does not assume the
+  recorded speed; replaying a recording slower changes when the robot meets moving people.
 - **One preprocessed format usable by both Qwen-RobotNav and Qwen-VLA.** Samples that can only serve one
   of the two are still created and labelled as such.
 - **Everything is published on Hugging Face, ready to load.** Check each source's terms first; some forbid
