@@ -18,6 +18,28 @@ Context that is not derivable from the code. Keep it short and current; delete w
   VLN-CE R2R/RxR, HM3D/MP3D object-goal, EVT-Bench tracking, nuScenes/OpenScene driving, point-goal.
   At that size data should be generated on the fly or streamed, not stored as one upload.
 
+## Direction set by the owner on 2026-10-04
+
+Purpose: an end-to-end navigation policy from open weights and open data (images in, trajectory out,
+perfect control assumed), whose results tell a robotics startup how to collect training data (is lidar
+worth it?) and how to build an evaluation set. It does not have to succeed; it has to be informative.
+
+- **Training data: as much as possible, from every public navigation-relevant dataset**, even ones that may
+  turn out to be poor; whether a source helps is itself a result. Trajectory-only sources (camera + ego
+  poses, no lidar) count as training data.
+- **Evaluation data: at most 400 scenarios per source dataset**, held out from that source, so the
+  evaluation suite spans all sources. (My reading of "at most 400 scenarios for all those training
+  dataset and should came from different training dataset"; confirm if it matters.)
+- **One preprocessed format usable by both Qwen-RobotNav and Qwen-VLA.** Samples that can only serve one
+  of the two are still created and labelled as such.
+- **Everything is published on Hugging Face, ready to load.** Check each source's terms first; some forbid
+  redistribution.
+- Model architecture stays fixed (one pretrained VLM); the variables are data and training method
+  (supervised, PPO, GRPO).
+- Open evaluation problems I raised and the owner called "good": the goal column leaks the answer (it is the
+  end of the 5 s future), real test sets are too easy/small, collision rate alone rewards standing still,
+  nothing is closed loop yet. Review page: https://claude.ai/artifact/ECWC19658KhJfe6znx3Zt5
+
 ## Machines are disposable
 
 The owner rents GPUs and switches machines. Assume everything outside GitHub and the Hugging Face Hub is
