@@ -20,6 +20,7 @@ import json
 import math
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import zlib
@@ -54,6 +55,7 @@ EGO_SIZE = (0.6, 0.6, 1.7)  # a nominal humanoid
 # to a cell) are dropped.
 NAV_RADIUS = 0.3
 PATH_MARGIN = 0.15       # the path is pushed this far from the navmesh boundary (0.45 m from obstacles)
+SIM_START_TIMEOUT = 900  # s; scene loading takes a few seconds to a few minutes
 MIN_ISLAND_AREA = 15.0   # m^2; smaller navmesh islands are not worth an episode
 # ego frame (x fwd, y left, z up) -> optical (x right, y down, z fwd)
 _AXES = np.array([[0, -1, 0], [0, 0, -1], [1, 0, 0]], float)
@@ -97,7 +99,12 @@ def make_sim(scene, gpu, dataset_config=None):
     # driver; a file lock serialises simulator construction (scene loading stays parallel).
     with open("/tmp/habitat_sim.lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        # Construction has hung in native code while holding this lock, stalling every other scene;
+        # the default SIGALRM action ends the process (and frees the lock) even then.
+        signal.signal(signal.SIGALRM, signal.SIG_DFL)
+        signal.alarm(SIM_START_TIMEOUT)
         sim = habitat_sim.Simulator(habitat_sim.Configuration(cfg, [agent]))
+        signal.alarm(0)
     nav = habitat_sim.NavMeshSettings()
     nav.set_defaults()
     nav.agent_radius, nav.agent_height = NAV_RADIUS, EGO_SIZE[2]
