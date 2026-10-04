@@ -13,13 +13,19 @@ for an **indoor** robot, with a set small enough to audit every scenario by hand
 
 1. **(owner) The model sees cameras only.** Inputs: camera images, the robot's own past poses, and a text
    prompt. No lidar, depth or maps at inference. The robot carries a **stereo camera**: every scenario stores
-   the left image; the right image is stored when the source has one (CODa, JRDB, MuSoHu, simulator renders),
-   and simulator renders use the robot's own stereo baseline, field of view and camera height.
+   the left image; the right image is stored when the source has one (CODa, JRDB, MuSoHu, simulator renders).
+2a. **(owner) The set is robot-agnostic.** The model is meant to be robust across robots, so camera height,
+   field of view, stereo baseline and footprint are not fixed by the set: real scenarios keep their source's
+   camera, simulator scenarios vary camera height and field of view. Scoring assumes a **humanoid walker like
+   Tesla Optimus or Figure** (about 1.7 m tall, 0.3 m footprint radius, overhead clearance 2 m) that only
+   walks (no running) and can **turn in place by any angle**. The footprint is a scoring parameter applied at
+   evaluation time, never baked into the stored data, so other robots can be scored by changing it.
 2. **(owner) Lidar and 3D ground truth are for building and scoring the set only.** Collisions are checked
    against lidar point clouds and boxes (real data) or scene meshes (simulator). A scenario without lidar or
    a mesh cannot enter the set.
-3. **(owner) The task comes as a prompt.** Either a point goal, "please walk towards the goal (x, y)", or a
-   natural-language instruction. Goal coordinates are in the robot frame at the current step: robot at
+3. **(owner) The task always comes as a text prompt, and the goal is part of the prompt.** Either a point
+   goal, "please walk towards the goal (x, y)", or a natural-language instruction, which may also name a
+   point ("walk to the door on your left at (3.0, 1.5)"). Language instructions are in the first version. Goal coordinates are in the robot frame at the current step: robot at
    (0, 0), x forward, y left, metres.
 4. **The goal must not give away the answer.** Today's `goal` column is the end of the scored 5 s future, so
    "straight to goal" is near the recorded path by construction. In the evaluation set the goal is a point
@@ -40,7 +46,8 @@ for an **indoor** robot, with a set small enough to audit every scenario by hand
   - In replayed real data, people do not react to the robot. Only the simulator is closed loop.
 - **(owner) Reference behaviour:** a human or expert path where the source has one (human-driven robot,
   person walking). Distance to it (ADE / FDE) is a secondary score: several paths can be good.
-- **(owner) Always, with or without a reference:** smoothness (jerk, curvature, heading rate), efficiency
+- **(owner) Always, with or without a reference:** smoothness (jerk, oscillation, needless stops; sharp or
+  in-place turns are not penalised, because the robot can turn by any angle), efficiency
   (progress towards the goal per metre travelled; in closed loop, success within a radius, SPL and time to
   goal) and task completion.
 - Target speed is about 0.5 m/s, slower than walking people (about 1.4 m/s). Reference paths are compared by
@@ -52,9 +59,9 @@ for an **indoor** robot, with a set small enough to audit every scenario by hand
   for the robot's indoor use.
 - **Size.** Detectable difference in collision rate between two models (15% base rate, 80% power, unpaired
   test): 100 scenarios: about 16 percentage points; 150: about 13; 200: about 11; 400: about 8. Paired
-  comparisons and continuous scores (clearance, progress) detect smaller differences. **Proposal: start with
-  100 indoor + up to 50 outdoor, and grow indoor to 150 if the confidence intervals of the first real model
-  comparisons are wider than the differences that matter.** The rule is fixed now, before any result.
+  comparisons and continuous scores (clearance, progress) detect smaller differences. **(owner) Start with
+  100 indoor + up to 50 outdoor.** Grow indoor to 150 if the confidence intervals of the first real model
+  comparisons are wider than the differences that matter; the rule is fixed now, before any result.
 - **Coverage** (each scenario tagged; selection fills every tag before adding more of any one):
   - indoor layout: corridor, doorway or narrow passage, open room or lobby, cluttered furniture, corner or
     turn, goal behind the robot, goal out of sight (around a corner or in another room), stairs or
@@ -82,11 +89,14 @@ for an **indoor** robot, with a set small enough to audit every scenario by hand
 4. Ranking on the simulator part in open loop agrees with closed-loop ranking in the simulator.
 5. Re-running the selection with another seed changes no conclusion.
 
-## Open questions for the owner
+## Settled with the owner (2026-10-04)
 
-- Robot specification: stereo baseline, camera resolution, field of view, camera height, footprint radius
-  (the evaluator assumes 0.3 m), whether it walks (legged / humanoid) or rolls.
-- 100 or 150 indoor scenarios (proposal above).
-- Language instructions in the first version, or point goals only?
-- Most candidate sources are non-commercial (CC BY-NC-SA, HSSD CC BY-NC, Matterport academic only):
-  confirm the startup's use fits.
+- Robot: a walking humanoid (Optimus / Figure class), turns in place; the set itself stays robot-agnostic.
+- Size: start with 100 indoor + at most 50 outdoor.
+- Prompts: every scenario has one; language instructions included from the first version.
+- Licences: not a constraint during the current broad investigation; recorded per source for later.
+
+## Open
+
+- Output format: an (x, y) path cannot show an in-place turn. Whether predictions should carry heading
+  (x, y, yaw) matters for closed loop; it does not change open-loop collision scoring.

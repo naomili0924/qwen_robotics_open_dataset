@@ -31,7 +31,9 @@ worth it?) and how to build an evaluation set. It does not have to succeed; it h
   100; grow if that is too few to tell models apart), outdoor at most 50.** Replaces the earlier 400. Cameras
   only at inference (robot has a stereo camera, no lidar); lidar / meshes only for building and scoring the
   set. Task given as a prompt, goal in the robot frame with the robot at (0, 0). Human / expert reference
-  when available; always score collision, smoothness, efficiency. Full design, acceptance tests and open
+  when available; always score collision, smoothness, efficiency. Robot-agnostic set; scoring assumes a humanoid walker
+  (Optimus / Figure class, turns in place); every scenario has a text prompt containing the goal; licences
+  are not a constraint during the current broad investigation. Full design, acceptance tests and open
   questions: `docs/eval_design.md`.
 - **Target robot speed: about 0.5 m/s, below 1.0 m/s** (owner, 2026-10-04; an earlier "1.5 m/s" was
   withdrawn). Slower than every walking-person dataset (about 1.4 m/s) and most wheeled-robot sets. Keep
