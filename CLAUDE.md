@@ -27,9 +27,9 @@ worth it?) and how to build an evaluation set. It does not have to succeed; it h
 - **Training data: as much as possible, from every public navigation-relevant dataset**, even ones that may
   turn out to be poor; whether a source helps is itself a result. Trajectory-only sources (camera + ego
   poses, no lidar) count as training data.
-- **Evaluation data: at most 400 scenarios per source dataset**, held out from that source, so the
-  evaluation suite spans all sources. (My reading of "at most 400 scenarios for all those training
-  dataset and should came from different training dataset"; confirm if it matters.)
+- **Evaluation data: one suite of at most 400 scenarios in total**, drawn from across the source datasets
+  (the owner confirmed: 400 total, not 400 per source). Stratify it over sources and pick scenarios where
+  naive baselines fail, so the overall comparison has power; per-source numbers are indicative only.
 - **One preprocessed format usable by both Qwen-RobotNav and Qwen-VLA.** Samples that can only serve one
   of the two are still created and labelled as such.
 - **Everything is published on Hugging Face, ready to load.** Check each source's terms first; some forbid
