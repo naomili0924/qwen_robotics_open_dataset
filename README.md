@@ -27,6 +27,8 @@ Data (one Hugging Face dataset per source; each card documents columns, frames a
 | RoboSense | converted | 1 Hz labels, so one config at 1 Hz (10 s + 10 s). Cars, pedestrians and cyclists only |
 | SiT | blocked | download link is issued only after signing the authors' terms-of-use form; licence statements conflict on whether converted data may be shared |
 | JRDB | converted | 15 Hz labels; 428 scenarios at 2.5 Hz (4 s + 4 s), 389 at 5 Hz, moving-robot sequences only. Pedestrians only; odometry refined by lidar scan matching |
+| Habitat + HSSD (simulation) | generated | point-goal episodes rendered in HSSD's synthetic houses; static world, 2 Hz (5 s + 5 s). `Jinyan0924/habitat_hssd_pointgoal_nav_scenarios` |
+| Habitat + HM3D / MP3D (simulation) | waiting for credentials | same generator; needs a Matterport API token (HM3D) and the signed MP3D form |
 | SCAND | not convertible as ground truth | no object boxes or tracks, so there are no future obstacle positions to score against |
 | MuSoHu | not convertible as ground truth | no object boxes or tracks; recorded from a helmet on a walking person |
 
@@ -117,6 +119,43 @@ python scripts/stream_robosense_images.py --pkl data/raw/robosense/splits --out 
 python scripts/convert_robosense.py --pkl data/raw/robosense/splits --bev data/interim/robosense_lidar \
     --images data/interim/robosense_images --out data/hf_robosense
 ```
+
+## Generate simulated scenarios (Habitat)
+
+`scripts/generate_habitat_pointnav.py` walks a nominal humanoid along navmesh shortest paths in a
+Habitat scene, renders a forward RGB camera (the past) and four depth cameras (the future's 360°
+geometry), and writes rows with exactly the real datasets' schema (no other agents). It runs in its own
+environment with habitat-sim 0.3.1 (`bash scripts/setup_machine.sh --habitat`).
+
+```bash
+# HSSD: the scenes are public on Hugging Face (CC BY-NC 4.0); git-lfs avoids per-file rate limits
+GIT_LFS_SKIP_SMUDGE=1 git clone https://huggingface.co/datasets/hssd/hssd-hab data/raw/hssd-hab
+(cd data/raw/hssd-hab && git lfs pull --include="stages/**,objects/**,scenes/**,semantics/**,metadata/**" \
+    --exclude="**/*.filteredSupportSurface.*")
+python scripts/prepare_hssd.py --hssd data/raw/hssd-hab --out data/raw/hssd-hab-nodoors   # closed doors cut houses up
+/venv/habitat/bin/python scripts/generate_habitat_pointnav.py \
+    --dataset-config data/raw/hssd-hab-nodoors/hssd-hab.scene_dataset_config.json \
+    --splits data/raw/hssd-hab/scene_splits.yaml --config hssd_2hz --out data/hf_hssd \
+    --episodes-per-scene 120 --workers 16            # --cpu renders with Mesa llvmpipe (tools/egl_software_only.c)
+# in a second shell: upload finished scenes as they appear, so a lost machine loses nothing
+python scripts/sync_parts_hf.py --repo <user>/<name> --out data/hf_hssd --config hssd_2hz --every 900
+```
+
+Each scene runs in its own subprocess (habitat-sim can die in native code); finished scenes leave
+`.done` markers, so re-running the same command resumes.
+
+## Moving to another machine
+
+Nothing needed to continue lives only on the machine: code is here, datasets and checkpoints are on the
+Hugging Face Hub. On a new machine put `HF_TOKEN` (and `GITHUB_TOKEN`) into `${WORKSPACE}/.env`, then
+
+```bash
+bash scripts/setup_machine.sh            # --habitat also installs the simulator environment
+python -m vla.train --run runs/flow_dit --hub_repo <user>/<model-repo> --resume auto ...
+```
+
+`--hub_repo` mirrors `<run>/last` and the log to a (private) model repo at every checkpoint;
+`--resume auto` continues from the local copy if there is one, otherwise from the Hub.
 
 ## Train a policy (Qwen-VL backbone + pluggable heads)
 
@@ -237,6 +276,8 @@ Qwen2.5-VL-3B with LoRA at 448 px per frame takes about 13 GB at batch 4 and 2 s
 | `hnod/io.py` | Parquet schema |
 | `hnod/eval.py` | collision evaluator and baselines |
 | `scripts/` | download, stream, convert, evaluate, visualise, publish |
+| `scripts/generate_habitat_pointnav.py`, `scripts/prepare_hssd.py`, `tools/egl_software_only.c` | simulated point-goal scenarios in Habitat (HSSD / HM3D), CPU rendering shim |
+| `scripts/sync_parts_hf.py`, `vla/hub.py`, `scripts/setup_machine.sh` | keep generated data and checkpoints on the Hub; bootstrap a new machine |
 | `vla/` | policy training: `data.py` prompts and targets, `heads.py` regression / flow heads with MLP or DiT denoisers (+ stochastic policies), `model.py` backbone + LoRA, `tasks.py` auxiliary heads, `train.py` supervised, `rl.py` PPO / GRPO with `rewards.py`, `pipeline.py` the front end, `predict.py`, `debug.py` pipeline checks, `probe.py` representation probing |
 
 Adding another source means writing a reader that returns segments in the layout documented in
@@ -245,4 +286,4 @@ Adding another source means writing a reader that returns segments in the layout
 ## License
 
 Code: MIT (see `LICENSE`). Converted data: CC BY-NC-SA 4.0 for CODa and RoboSense, CC BY-NC-SA 3.0 for
-JRDB, inherited from the sources; cite the source dataset when using it (citations in the dataset cards).
+JRDB, CC BY-NC 4.0 for the HSSD renders, inherited from the sources; cite the source dataset when using it (citations in the dataset cards).

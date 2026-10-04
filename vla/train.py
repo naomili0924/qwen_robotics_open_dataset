@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from hnod import eval as ev  # noqa: E402
 from vla.config import Config, parse_args  # noqa: E402
 from vla.data import Collator, NavDataset, columns_for, fit_action_scale, load_split, to_device  # noqa: E402
+from vla import hub  # noqa: E402
 from vla.model import NavPolicy  # noqa: E402
 from vla.tasks import aux_tasks  # noqa: E402
 
@@ -113,13 +114,14 @@ def train(cfg: Config, model=None, train_ds=None, val_rows=None):
     opt = torch.optim.AdamW(groups, weight_decay=cfg.weight_decay, betas=(0.9, 0.95))
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: lr_at(s, cfg))
     step = 0
-    if cfg.resume:
-        model.load(cfg.resume)
-        state = torch.load(Path(cfg.resume) / "trainer.pt", map_location="cpu")
+    resume = hub.resolve_resume(cfg)
+    if resume:
+        model.load(resume)
+        state = torch.load(Path(resume) / "trainer.pt", map_location="cpu")
         opt.load_state_dict(state["opt"])
         sched.load_state_dict(state["sched"])
         step = state["step"]
-        print(f"resumed from {cfg.resume} at step {step}", flush=True)
+        print(f"resumed from {resume} at step {step}", flush=True)
 
     writer = SummaryWriter(run / "tb")
     log = open(run / "log.jsonl", "a")
@@ -137,6 +139,7 @@ def train(cfg: Config, model=None, train_ds=None, val_rows=None):
         d = run / name
         model.save(d)
         torch.save({"opt": opt.state_dict(), "sched": sched.state_dict(), "step": step}, d / "trainer.pt")
+        hub.save_last(run, name, cfg.hub_repo)
 
     model.train()
     t0, window = time.time(), []
