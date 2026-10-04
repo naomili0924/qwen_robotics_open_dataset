@@ -30,11 +30,12 @@ worth it?) and how to build an evaluation set. It does not have to succeed; it h
 - **Evaluation data: one suite of at most 400 scenarios in total**, drawn from across the source datasets
   (the owner confirmed: 400 total, not 400 per source). Stratify it over sources and pick scenarios where
   naive baselines fail, so the overall comparison has power; per-source numbers are indicative only.
-- **Target robot speed: 1.5 m/s** (owner, 2026-10-04, after first saying it "walks slow"; 1.5 m/s is about
-  normal human walking pace, so I asked whether the unit is m/s; treat as 1.5 m/s unless corrected).
-  Whatever the value, keep speed out of the stored targets: store raw metric poses with timestamps and
-  each sample's source speed, and derive waypoints at load time by distance along the path or at the
-  target speed. The simulator generator's speed (1.0 m/s in the HSSD run) must be a parameter.
+- **Target robot speed: about 0.5 m/s, below 1.0 m/s** (owner, 2026-10-04; an earlier "1.5 m/s" was
+  withdrawn). Slower than every walking-person dataset (about 1.4 m/s) and most wheeled-robot sets. Keep
+  speed out of the stored targets: store raw metric poses with timestamps and each sample's source speed,
+  and derive waypoints at load time by distance along the path or at the target speed. Simulator runs
+  should use about 0.5 m/s (the first 113 HSSD houses used 1.0 m/s). Closest real matches by speed: slow
+  indoor robots (GoStanford, HuRoN, JRDB).
 - **One preprocessed format usable by both Qwen-RobotNav and Qwen-VLA.** Samples that can only serve one
   of the two are still created and labelled as such.
 - **Everything is published on Hugging Face, ready to load.** Check each source's terms first; some forbid
