@@ -42,7 +42,12 @@ lost: `/dev/shm` (where large builds run) is a RAM disk, and `/workspace` is usu
 - SCAND, MuSoHu: no object tracks, so not usable as collision ground truth.
 - Habitat + HSSD point-goal: generated with `scripts/generate_habitat_pointnav.py`. HSSD stood in for HM3D
   because HM3D needs a Matterport API token.
-- HM3D, MP3D (VLN-CE, object-goal), nuScenes: wait for the owner's credentials (see README).
+- HM3D, MP3D (VLN-CE, object-goal), nuScenes: wait for the owner's credentials (instructions were given
+  on 2026-10-04: Matterport API token in `.env`, signed MP3D form -> `download_mp.py`, nuScenes login).
+  The code exists (`--task vln|objectnav` in the generator, `hnod/nuscenes.py`) but has only been run on
+  stand-ins (HSSD scenes, a synthetic nuScenes fixture); expect to debug on first contact with real data.
+- EVT-Bench tracking and OpenScene: not started. Rows have `task` / `instruction` columns from the
+  `episode-sources` branch on; datasets published before that lack them and loaders tolerate it.
 
 ## Things that bit before
 

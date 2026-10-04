@@ -226,4 +226,5 @@ def build_scenario(seg, anchor, step):
         rate_hz=float(rate), current_time_index=CURRENT,
         timestamps=seg["timestamps"][idx], source_frames=seg["frames"][idx],
         world_from_scenario=T, ego=ego, goal=ego_local[-1, :2].copy(), tracks=tracks,
+        task=seg.get("task", "pointgoal"), instruction=seg.get("instruction", ""),
         tracks_to_predict=to_predict, segment_index=idx, track_rows=keep)
