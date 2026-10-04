@@ -27,9 +27,12 @@ worth it?) and how to build an evaluation set. It does not have to succeed; it h
 - **Training data: as much as possible, from every public navigation-relevant dataset**, even ones that may
   turn out to be poor; whether a source helps is itself a result. Trajectory-only sources (camera + ego
   poses, no lidar) count as training data.
-- **Evaluation data: one suite of at most 400 scenarios in total**, drawn from across the source datasets
-  (the owner confirmed: 400 total, not 400 per source). Stratify it over sources and pick scenarios where
-  naive baselines fail, so the overall comparison has power; per-source numbers are indicative only.
+- **Evaluation data (owner, revised 2026-10-04): start with about 100 scenarios, indoor the majority (at least
+  100; grow if that is too few to tell models apart), outdoor at most 50.** Replaces the earlier 400. Cameras
+  only at inference (robot has a stereo camera, no lidar); lidar / meshes only for building and scoring the
+  set. Task given as a prompt, goal in the robot frame with the robot at (0, 0). Human / expert reference
+  when available; always score collision, smoothness, efficiency. Full design, acceptance tests and open
+  questions: `docs/eval_design.md`.
 - **Target robot speed: about 0.5 m/s, below 1.0 m/s** (owner, 2026-10-04; an earlier "1.5 m/s" was
   withdrawn). Slower than every walking-person dataset (about 1.4 m/s) and most wheeled-robot sets. Keep
   speed out of the stored targets: store raw metric poses with timestamps and each sample's source speed,
@@ -90,7 +93,7 @@ checklist https://claude.ai/artifact/WGnLK4P5b8Wa14cCdcTAwT.
      one source at a time and deleting raw files after upload (single sources reach 1 TB).
   3. Matterport-based data from the pre-rendered StreamVLN / InternData-N1 sets and from HM3D with the
      token; MP3D when the signed form is answered. Publish to gated repos.
-  4. The 400-scenario evaluation suite, the composite score, closed-loop evaluation in simulation.
+  4. The evaluation set (`docs/eval_design.md`), closed-loop evaluation in simulation.
   5. First trained model, then the experiment table in the strategy review.
 - **Still to confirm with the owner:** changing the `goal` column of the three published real datasets
   (it currently leaks the end of the future); the composite score as headline; who the PI on the MP3D form
