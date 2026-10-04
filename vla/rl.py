@@ -28,6 +28,7 @@ from vla import rewards as R  # noqa: E402
 from vla.config import Config, parse_args  # noqa: E402
 from vla.data import Collator, NavDataset, columns_for, fit_action_scale, load_split, to_device  # noqa: E402
 from vla.heads import ValueHead  # noqa: E402
+from vla import hub  # noqa: E402
 from vla.model import NavPolicy  # noqa: E402
 from vla.tasks import aux_tasks  # noqa: E402
 from vla.train import evaluate, lr_at, make_loader, seed_all  # noqa: E402
@@ -147,6 +148,7 @@ def train_rl(cfg: Config, model=None, train_rows=None, val_rows=None):
         model.save(run / name)
         if value is not None:
             torch.save(value.state_dict(), run / name / "value_head.pt")
+        hub.save_last(run, name, cfg.hub_repo)
 
     stats, t0 = [], time.time()
     done = False

@@ -74,7 +74,8 @@ class Config:
     eval_batches: int = 16              # validation loss over this many batches
     eval_scenarios: int = 64            # validation scenarios scored with the collision evaluator
     save_every: int = 500
-    resume: str = ""
+    resume: str = ""                    # checkpoint directory, or "auto": <run>/last locally, else from hub_repo
+    hub_repo: str = ""                  # HF model repo that mirrors <run>/last at every checkpoint (survives the machine)
     limit_train: int = 0                # debugging: use only this many training scenarios
     limit_val: int = 0
 
