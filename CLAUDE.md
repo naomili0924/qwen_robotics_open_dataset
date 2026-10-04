@@ -39,7 +39,11 @@ worth it?) and how to build an evaluation set. It does not have to succeed; it h
 - **One preprocessed format usable by both Qwen-RobotNav and Qwen-VLA.** Samples that can only serve one
   of the two are still created and labelled as such.
 - **Everything is published on Hugging Face, ready to load.** Check each source's terms first; some forbid
-  redistribution.
+  redistribution. The owner accepted (2026-10-04) **gated repos for anything rendered in Matterport scenes**
+  (MP3D, HM3D and episodes built on them): the access form must show the Matterport academic EULA and
+  record who accepts. Access/licence survey of about 70 sources:
+  https://claude.ai/artifact/WGnLK4P5b8Wa14cCdcTAwT (not publishable: Waymo, ONCE, CoVLA, NVIDIA AV,
+  Ego4D, Aria AEA/ADT, SiT, ScanNet; YouTube-based sets: ids and derived paths only).
 - Model architecture stays fixed (one pretrained VLM); the variables are data and training method
   (supervised, PPO, GRPO).
 - Open evaluation problems I raised and the owner called "good": the goal column leaks the answer (it is the
