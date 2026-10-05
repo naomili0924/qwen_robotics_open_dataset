@@ -107,3 +107,20 @@ def test_frame_nav_dataset_items_match_the_scenario_layout():
     w = ds.weights("equal")
     assert np.isclose(w[:len(ds.parts[0])].sum(), w[len(ds.parts[0]):].sum())
     assert fit_action_scale_frames(ds, cfg) >= 1.0
+
+
+def test_lidar_tracks_find_a_walker_not_a_wall():
+    from hnod import lidar_tracks as lt
+    rng = np.random.default_rng(0)
+    frames = []
+    for i in range(120):  # 12 s at 10 Hz
+        wall = np.c_[np.linspace(-5, 5, 200), np.full(200, 3.0)]
+        person = np.array([-4 + 0.12 * i, 0.0]) + rng.normal(0, 0.1, (30, 2))  # 1.2 m/s along x
+        xy = np.r_[wall, person]
+        h = np.r_[rng.uniform(0.3, 1.9, 200), rng.uniform(0.3, 1.7, 30)]
+        frames.append((xy, h, np.array([0.0, -2.0])))
+    moving = lt.moving_points(frames)
+    assert moving[60][200:].mean() > 0.8 and moving[60][:200].mean() < 0.05
+    dets = [lt.clusters(xy[m], h[m]) for (xy, h, _), m in zip(frames, moving)]
+    tracks = lt.track(dets, 0.1)
+    assert len(tracks) == 1 and np.hypot(*(tracks[0]["xy"][-1] - tracks[0]["xy"][0])) > 8

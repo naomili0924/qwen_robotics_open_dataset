@@ -54,6 +54,9 @@ SOURCES = [
     # frames to training but most of the real indoor scenarios with people
     dict(name="jrdb_train", repo="Jinyan0924/qwen_robotics_open_dataset_jrdb", config="jrdb_2.5hz", split="train",
          reference="teleoperated_robot", environment=None),
+    # real indoor walks with people (helmet-worn sensors; people tracked in the lidar, not annotated); evaluation only
+    dict(name="musohu", repo="Jinyan0924/qwen_robotics_open_dataset_musohu", config="musohu_2hz", split="test",
+         reference="human_walker", environment=None),
     # more simulated houses: HSSD's validation houses (training uses its train houses only)
     dict(name="hssd_val", repo="Jinyan0924/habitat_hssd_pointgoal_nav_scenarios", config="hssd_2hz",
          split="validation", reference="shortest_path_planner", environment="indoor"),
