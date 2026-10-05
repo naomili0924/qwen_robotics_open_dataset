@@ -93,6 +93,132 @@ class NavDataset(Dataset):
                     aux={t.name: t.target(row, self.cfg) for t in self.tasks})
 
 
+# ----------------------------------------------------------------------------- per-frame data (hnod.frames)
+
+def window_config(cfg):
+    from hnod.windows import WindowConfig
+    return WindowConfig(n_waypoints=cfg.horizon, spacing_m=cfg.spacing_m, n_past=CURRENT, past_dt_s=cfg.past_dt_s,
+                        min_indoor_prob=cfg.min_indoor_prob, seed=cfg.seed)
+
+
+def load_frames(cfg, split):
+    """One hnod.windows.FrameWindows per repo in cfg.frames_repos that has this split."""
+    from hnod.windows import FrameWindows
+    parts = []
+    for repo in [r.strip() for r in cfg.frames_repos.split(",") if r.strip()]:
+        # a Hub repo, or a local copy made by scripts/cache_frames.py (<dir>/frames, <dir>/episodes)
+        local = os.path.isdir(repo)
+        fr = sorted(glob.glob(f"{repo}/frames/{split}-*.parquet")) if local else f"data/frames/{split}-*.parquet"
+        ep = sorted(glob.glob(f"{repo}/episodes/{split}-*.parquet")) if local else f"data/episodes/{split}-*.parquet"
+        if local and not fr:
+            print(f"{repo}: no {split} split, skipped", flush=True)
+            continue
+        try:  # name the split's files: load_dataset(repo, "frames", split=...) would download every split first
+            frames = load_dataset("parquet" if local else repo, data_files={split: fr}, split=split,
+                                  cache_dir=cfg.cache_dir)
+        except FileNotFoundError:  # some sources publish only a train split (their held-out data is evaluation data)
+            print(f"{repo}: no {split} split, skipped", flush=True)
+            continue
+        episodes = load_dataset("parquet" if local else repo, data_files={split: ep}, split=split,
+                                cache_dir=cfg.cache_dir)
+        parts.append(FrameWindows(frames, episodes, window_config(cfg)))
+    return parts
+
+
+def frames_prompt(s, cfg):
+    v = np.hypot(*s["velocity"])
+    parts = [f"Image interval {cfg.past_dt_s:.1f} s. Current speed {v:.2f} m/s."]
+    if cfg.ego_history:
+        past = ", ".join(f"({x:.1f}, {y:.1f})" for x, y in s["past_xy"])
+        parts.append(f"Robot positions over the last {len(s['past_xy']) - 1} images, oldest first: {past}.")
+    parts.append(s["prompt"])
+    parts.append(f"Predict {cfg.horizon} waypoints along the robot's path, {cfg.spacing_m:.2f} m apart.")
+    return " ".join(parts)
+
+
+def frame_item(windows, k, cfg, index=0):
+    """One training item (NavDataset layout) for sample k of a hnod.windows.FrameWindows."""
+    s = windows[k]
+    goal = s["goal"] if s["goal_given"] else np.zeros(2, np.float32)
+    kin = np.r_[s["past_xy"].ravel(), s["velocity"], goal].astype(np.float32)
+    return dict(index=index, scenario_id=f"{s['episode_id']}:{s['frame_index']}",
+                images=[im.convert("RGB") for im in s["images"][-cfg.frames:]],
+                prompt=frames_prompt(s, cfg), kin=kin,
+                target=s["target"][:, :cfg.action_dim] / cfg.action_scale, aux={})
+
+
+class _StreamItem:
+    """Picklable item function for vla.stream.StreamFrames."""
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+
+    def __call__(self, windows, k):
+        return frame_item(windows, k, self.cfg)
+
+
+def stream_frames(cfg, split, finite=False, max_items=0):
+    """vla.stream.StreamFrames over cfg.frames_repos (Hub repos), bounded disk use."""
+    import dataclasses
+    from vla.stream import StreamFrames
+    wcfg = window_config(cfg)
+    if finite:
+        wcfg = dataclasses.replace(wcfg, stride=10)  # validation: spread a fixed number of items over episodes
+    repos = [r.strip() for r in cfg.frames_repos.split(",") if r.strip()]
+    return StreamFrames(repos, split, wcfg, _StreamItem(cfg), mix=cfg.frames_mix, seed=cfg.seed, finite=finite,
+                        max_items=max_items)
+
+
+def fit_action_scale_stream(stream, cfg, per_source=256):
+    """Action scale from one shard of every source (the 95th percentile of |target|)."""
+    from vla.stream import read_shard
+    from hnod.windows import FrameWindows
+    vals = []
+    rng = np.random.default_rng(0)
+    for src in stream.sources:
+        w = FrameWindows(read_shard(src.repo, src.frames[0]), stream.episodes[src.repo], stream.window_cfg)
+        for k in rng.choice(len(w), size=min(per_source, len(w)), replace=False):
+            vals.append(np.abs(w.sample(int(k))["target"][:, :cfg.action_dim]).ravel())
+    return float(max(1.0, np.percentile(np.concatenate(vals), 95)))
+
+
+class FrameNavDataset(Dataset):
+    """Training items from per-frame data, in the same layout as NavDataset (no auxiliary tasks)."""
+
+    def __init__(self, parts, cfg):
+        self.parts, self.cfg = parts, cfg
+        self.cum = np.cumsum([0] + [len(p) for p in parts])
+
+    def __len__(self):
+        return int(self.cum[-1])
+
+    def _locate(self, i):
+        part = int(np.searchsorted(self.cum, i, side="right") - 1)
+        return self.parts[part], i - int(self.cum[part])
+
+    def sample(self, i):
+        w, k = self._locate(i)
+        return w.sample(k)
+
+    def weights(self, mix):
+        """Per-item sampling weights: proportional (all 1) or equal total weight per source."""
+        if mix == "equal":
+            return np.concatenate([np.full(len(p), 1.0 / max(1, len(p))) for p in self.parts])
+        if mix == "sqrt":
+            return np.concatenate([np.full(len(p), 1.0 / np.sqrt(max(1, len(p)))) for p in self.parts])
+        return np.ones(len(self))
+
+    def __getitem__(self, i):
+        w, k = self._locate(i)
+        return frame_item(w, k, self.cfg, index=i)
+
+
+def fit_action_scale_frames(ds, cfg, n=512):
+    idx = np.random.default_rng(0).choice(len(ds), size=min(n, len(ds)), replace=False)
+    vals = np.concatenate([np.abs(ds.sample(int(i))["target"][:, :cfg.action_dim]).ravel() for i in idx])
+    return float(max(1.0, np.percentile(vals, 95)))
+
+
 def columns_for(cfg, tasks):
     cols = list(INPUT_COLUMNS)
     for t in tasks:

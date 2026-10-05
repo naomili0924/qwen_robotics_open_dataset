@@ -69,37 +69,29 @@ lost: `/dev/shm` (where large builds run) is a RAM disk, and `/workspace` is usu
   `MATTERPORT_TOKEN_SECRET`. The owner re-enters them on a new machine. Never print them.
 - New machine: `bash scripts/setup_machine.sh [--habitat]`.
 
-## State on 2026-10-04, before the owner changed machines
+## State on 2026-10-05
 
-Read `docs/dataset_access.md` (every surveyed dataset: host, gate, licence, credentials status) and
-`docs/model_formats.md` (Qwen-RobotNav / Qwen-VLA inputs and outputs, and the storage design that follows).
-Owner-facing pages: strategy review https://claude.ai/artifact/ECWC19658KhJfe6znx3Zt5, credential
-checklist https://claude.ai/artifact/WGnLK4P5b8Wa14cCdcTAwT.
+Branch `frames-and-eval-suite` (on top of `episode-sources`) holds this work; open a PR for it.
 
-- **Branches.** `main` = through PR #1. `habitat-hssd` = PR #2 (open): Habitat generator, Hub sync, Hub
-  checkpoints, bootstrap. `episode-sources` (PR #3, draft, contains `habitat-hssd`): task / instruction
-  columns, VLN-CE and ObjectNav episode modes (**never run end to end**: the test was interrupted),
-  nuScenes reader (synthetic-format test only), `docs/`. Work from `episode-sources`.
-- **HSSD point-goal run.** Stopped at the owner's request with 113 of 168 houses done, 61,754 scenarios
-  (41,742 / 8,935 / 11,077), all 534 shards on the Hub. `docs/hssd_2hz_progress.json` (also on the Hub
-  under `progress/`) lists done and not-done scenes; the `.done` markers died with the machine, so on a new
-  machine run only the not-done scenes (job index = position in the sorted scene list, seed 0). Those 113
-  were rendered at 1.0 m/s; the owner's robot is about 0.5 m/s, so decide with the owner whether to finish
-  at 0.5 m/s or keep one speed.
-- **Nothing has been trained.** No GPU was usable on the old machine.
-- **Next, in the order agreed with the owner:**
-  1. Per-frame storage format usable by both models (design in `docs/model_formats.md`), with a loader that
-     cuts windows by distance; first reader: EgoWalk (notes on its layout at the end of
-     `docs/dataset_access.md`; I had inspected one trajectory and written no code yet).
-  2. Readers for the open sources, cheapest first; publish each to its own Hugging Face repo, converting
-     one source at a time and deleting raw files after upload (single sources reach 1 TB).
-  3. Matterport-based data from the pre-rendered StreamVLN / InternData-N1 sets and from HM3D with the
-     token; MP3D when the signed form is answered. Publish to gated repos.
-  4. The evaluation set (`docs/eval_design.md`), closed-loop evaluation in simulation.
-  5. First trained model, then the experiment table in the strategy review.
-- **Still to confirm with the owner:** changing the `goal` column of the three published real datasets
-  (it currently leaks the end of the future); the composite score as headline; who the PI on the MP3D form
-  is and whether the use is academic (the Matterport EULA allows only academic, non-commercial use).
+- **Per-frame training format** (`hnod/frames.py`, `hnod/windows.py`, `docs/model_formats.md`): configs `frames` +
+  `episodes` per repo; samples (history, waypoints by distance, goal beyond the horizon, prompt) are cut at load
+  time. `vla` trains on it with `--data_format frames --frames_repos a,b,c` (`--frames_mix equal`,
+  `--min_indoor_prob`). Published: EgoWalk (`Jinyan0924/qwen_robotics_open_dataset_egowalk`, 57 h, all splits),
+  and train-only per-frame configs added to the CODa, RoboSense and HSSD repos (`scripts/scenarios_to_frames.py`).
+- **Evaluation suite v1** (`docs/eval_design.md` "As built", `docs/eval_audit_v1.json`): 150 scenarios (100 indoor,
+  50 outdoor), `Jinyan0924/qwen_robotics_nav_eval`. Reserved for evaluation, never train or tune on them: all of
+  JRDB, CODa test + validation, RoboSense validation, HSSD test + validation houses. Rebuild with
+  `scripts/build_eval_suite.py candidates|select|write`; selection keeps the audit's `accepted` scenarios fixed.
+- **Evaluation suite v2** (default config, `docs/eval_audit_v2.json`): all 100 indoor scenarios real (75 MuSoHu, 17
+  JRDB, 8 CODa), same 50 outdoor. MuSoHu (`Jinyan0924/qwen_robotics_open_dataset_musohu`) is reserved for evaluation;
+  its people are tracked in the lidar (`hnod/lidar_tracks.py`). v2 is easier for naive planners than v1 (straight to
+  goal: 69% vs 20% indoor success). GND is outdoor-only; SCAND's server (dataverse.tdl.org) returns 403 to this
+  data-centre IP.
+- **Nothing has been trained yet**; the H100 machine of 2026-10-05 is the first with a usable GPU.
+- **Still open with the owner:** finishing the other 55 HSSD houses at 0.5 m/s; who the PI on the MP3D form is;
+  the `goal` column of the published scenario sets still leaks the answer (the suite uses its own goals).
+- **Next:** first trained models (per-frame data, supervised), scored with `vla/predict_suite.py`; v2 of the
+  suite with more real indoor data (MuSoHu, SCAND indoor parts, HM3D); the remaining HSSD houses at 0.5 m/s.
 
 ## Source status
 

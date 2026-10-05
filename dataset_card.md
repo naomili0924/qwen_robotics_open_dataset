@@ -32,6 +32,14 @@ configs:
     path: data/coda_10hz/validation-*.parquet
   - split: test
     path: data/coda_10hz/test-*.parquet
+- config_name: frames
+  data_files:
+  - split: train
+    path: data/frames/train-*.parquet
+- config_name: episodes
+  data_files:
+  - split: train
+    path: data/episodes/train-*.parquet
 ---
 
 # Robot Navigation Open Scenarios: CODa
@@ -57,6 +65,37 @@ path runs into anything in the future geometry. Code: <https://github.com/naomil
 ground. Middle: bird's-eye view with the static map (dark = occupied), object boxes and their future
 tracks (red pedestrians, orange cycles, purple vehicles, blue static objects, grey operator), ego in
 green, goal as a star. Right: the lidar points of the last future step (black static, red dynamic).*
+
+<!-- per-frame:begin -->
+## Per-frame training configs: `frames` and `episodes`
+
+The same recordings in the per-frame training format of
+[qwen_robotics_open_dataset](https://github.com/naomili0924/qwen_robotics_open_dataset) (described in full on the
+[EgoWalk card](https://huggingface.co/datasets/Jinyan0924/qwen_robotics_open_dataset_egowalk)): one row per
+camera frame with the raw metric pose (x, y, z, yaw), plus one row per episode with camera, environment and
+embodiment. Training samples (history, waypoints by distance along the path, a goal beyond the horizon, a text
+prompt) are cut at load time with `hnod.windows.FrameWindows`.
+
+| Split | Episodes | Frames | Rate | Hours | km | Indoor frames | Median speed |
+|---|---|---|---|---|---|---|---|
+| train | 56 | 19,575 | 10 Hz | 0.5 | 1.7 | 3% | 0.94 m/s |
+
+Built from `coda_10hz` train: frames at 10 Hz, wheeled Clearpath Husky, front camera. Small: only CODa's annotated stretches were converted to scenarios. Frames were collected from the scenario rows (each imaged frame once) and their poses mapped back to the
+source's world frame; the last second or so of each recorded segment, which has poses but no images in the
+scenario rows, is dropped. Indoor / outdoor: `estimated:clip-vit-l14`, a rough estimate: CLIP tends to call courtyards and
+covered walkways indoor (the evaluation suite's labels were reviewed by eye instead). **Only the train split is published here: the
+held-out splits of this source are part of the evaluation suite
+([qwen_robotics_nav_eval](https://huggingface.co/datasets/Jinyan0924/qwen_robotics_nav_eval)) and must not be
+trained or tuned on.**
+
+```python
+from datasets import load_dataset
+from hnod.windows import FrameWindows
+frames = load_dataset("Jinyan0924/qwen_robotics_open_dataset", "frames", split="train")
+episodes = load_dataset("Jinyan0924/qwen_robotics_open_dataset", "episodes", split="train")
+samples = FrameWindows(frames, episodes)
+```
+<!-- per-frame:end -->
 
 ## Configurations
 

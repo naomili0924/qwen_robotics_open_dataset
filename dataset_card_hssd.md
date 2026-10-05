@@ -25,6 +25,14 @@ configs:
     path: data/hssd_2hz/validation-*.parquet
   - split: test
     path: data/hssd_2hz/test-*.parquet
+- config_name: frames
+  data_files:
+  - split: train
+    path: data/frames/train-*.parquet
+- config_name: episodes
+  data_files:
+  - split: train
+    path: data/episodes/train-*.parquet
 ---
 
 # Robot Navigation Open Scenarios: Habitat HSSD point-goal
@@ -55,6 +63,37 @@ Each scenario has two halves:
 *Three test scenarios. Left: the current image with the future path drawn on the floor. Middle:
 bird's-eye view with the static map (dark = occupied), ego in green, goal as a star. Right: the points of
 the last future step.*
+
+<!-- per-frame:begin -->
+## Per-frame training configs: `frames` and `episodes`
+
+The same recordings in the per-frame training format of
+[qwen_robotics_open_dataset](https://github.com/naomili0924/qwen_robotics_open_dataset) (described in full on the
+[EgoWalk card](https://huggingface.co/datasets/Jinyan0924/qwen_robotics_open_dataset_egowalk)): one row per
+camera frame with the raw metric pose (x, y, z, yaw), plus one row per episode with camera, environment and
+embodiment. Training samples (history, waypoints by distance along the path, a goal beyond the horizon, a text
+prompt) are cut at load time with `hnod.windows.FrameWindows`.
+
+| Split | Episodes | Frames | Rate | Hours | km | Indoor frames | Median speed |
+|---|---|---|---|---|---|---|---|
+| train | 7,505 | 158,855 | 2 Hz | 21.0 | 75.5 | 91% | 1.00 m/s |
+
+Built from `hssd_2hz` train: frames at 2 Hz rendered at 1.0 m/s by a shortest-path agent; episodes end at their goal (`ends_at_rest`). Some episodes leave the houses through the gardens (the generator's room-polygon restriction leaks): use `frame_indoor_prob` or `environment` to keep indoor ones. Frames were collected from the scenario rows (each imaged frame once) and their poses mapped back to the
+source's world frame; the last second or so of each recorded segment, which has poses but no images in the
+scenario rows, is dropped. Indoor / outdoor: `estimated:clip-vit-l14`, a rough estimate: CLIP tends to call courtyards and
+covered walkways indoor (the evaluation suite's labels were reviewed by eye instead). **Only the train split is published here: the
+held-out splits of this source are part of the evaluation suite
+([qwen_robotics_nav_eval](https://huggingface.co/datasets/Jinyan0924/qwen_robotics_nav_eval)) and must not be
+trained or tuned on.**
+
+```python
+from datasets import load_dataset
+from hnod.windows import FrameWindows
+frames = load_dataset("Jinyan0924/habitat_hssd_pointgoal_nav_scenarios", "frames", split="train")
+episodes = load_dataset("Jinyan0924/habitat_hssd_pointgoal_nav_scenarios", "episodes", split="train")
+samples = FrameWindows(frames, episodes)
+```
+<!-- per-frame:end -->
 
 ## What is in it
 

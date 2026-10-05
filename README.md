@@ -19,6 +19,51 @@ Data (one Hugging Face dataset per source; each card documents columns, frames a
 
 ![Example scenarios](figures/coda/coda_2hz_examples.png)
 
+## Training data and the evaluation suite
+
+**Evaluation suite** (<https://huggingface.co/datasets/Jinyan0924/qwen_robotics_nav_eval>, config `v1`): 150
+hand-audited scenarios for an indoor robot, 100 indoor and 50 outdoor, each with a text prompt containing the
+goal ("Please walk towards the goal (x, y)."). The model returns a path; the robot follows it at 0.5 m/s and is
+scored for at-fault collisions, progress, smoothness and distance to the recorded reference. Design:
+[`docs/eval_design.md`](docs/eval_design.md); every audit decision: [`docs/eval_audit_v1.json`](docs/eval_audit_v1.json).
+
+```bash
+python scripts/evaluate_suite.py --pred my_predictions.json        # {"v1-0000": [[x, y], ...], ...}
+python -m vla.predict_suite --checkpoint runs/<run>/last --out preds.json
+python scripts/build_eval_suite.py candidates && python scripts/build_eval_suite.py select && \
+    python scripts/build_eval_suite.py write                       # rebuild (selection keeps audited scenarios)
+```
+
+**Run a trained policy** (checkpoints are on a Hugging Face model repo: `<run>/last`, `<run>/step_<N>`, `<run>/best`):
+
+```bash
+# score a checkpoint on the suite
+python -m vla.predict_suite --hub-repo <user>/<repo> --checkpoint <run>/best --version v2 --out best_v2.json
+# your own images (oldest first, 1 s apart, last = now) and a goal in the robot frame -> path
+python -m vla.infer --hub-repo <user>/<repo> --checkpoint <run>/best --images a.jpg b.jpg c.jpg --goal 4.0 -1.0 --plot path.png
+```
+
+```python
+from vla.pipeline import NavigationPipeline
+pipe = NavigationPipeline.from_hub("<user>/<repo>", "<run>/best")
+path = pipe.predict_path(images, goal=(4.0, -1.0))     # (8, 2) waypoints in metres, 0.25 m apart
+```
+
+**Training data** in a per-frame format (configs `frames` + `episodes`; [`hnod/frames.py`](hnod/frames.py)):
+raw images and metric poses per frame, with history, waypoints (by distance along the path, so no speed is baked
+in), goal and prompt cut at load time by [`hnod/windows.py`](hnod/windows.py).
+
+| Source | Repo | Size | Notes |
+|---|---|---|---|
+| EgoWalk | `Jinyan0924/qwen_robotics_open_dataset_egowalk` | 57 h, 232 km, 1.03 M frames | people walking, 47% indoor frames, 79 k language goals |
+| HSSD (simulated) | `Jinyan0924/habitat_hssd_pointgoal_nav_scenarios` | 21 h, 159 k frames | train houses only |
+| RoboSense | `Jinyan0924/qwen_robotics_open_dataset_robosense` | 6.9 h, 25.6 k frames (1 Hz) | train split only |
+| CODa | `Jinyan0924/qwen_robotics_open_dataset` | 0.5 h, 19.6 k frames (10 Hz) | train split only |
+
+Held out for evaluation, never train or tune on them: all of JRDB, CODa test + validation, RoboSense validation,
+HSSD test + validation houses. Train with `python -m vla.train --data-format frames --frames-repos <repo>,<repo>`
+(`--frames-mix equal` to weight sources equally, `--min-indoor-prob 0.5` for indoor frames only).
+
 ## Status
 
 | Source | Status | Notes |
@@ -31,6 +76,7 @@ Data (one Hugging Face dataset per source; each card documents columns, frames a
 | Habitat + HM3D / MP3D (simulation) | waiting for credentials | same generator; needs a Matterport API token (HM3D) and the signed MP3D form |
 | SCAND | not convertible as ground truth | no object boxes or tracks, so there are no future obstacle positions to score against |
 | MuSoHu | not convertible as ground truth | no object boxes or tracks; recorded from a helmet on a walking person |
+| EgoWalk | converted (training only) | per-frame format; person-carried ZED, visual odometry; no obstacle ground truth |
 
 The reasons are spelled out in the CODa dataset card ([`dataset_card.md`](dataset_card.md)).
 
@@ -304,6 +350,9 @@ Qwen2.5-VL-3B with LoRA at 448 px per frame takes about 13 GB at batch 4 and 2 s
 | `hnod/pipeline.py` | segment to Parquet rows, shared by all converters |
 | `hnod/io.py` | Parquet schema |
 | `hnod/eval.py` | collision evaluator and baselines |
+| `hnod/frames.py`, `hnod/windows.py`, `hnod/environment.py` | per-frame training format, load-time sample cutting, CLIP indoor / outdoor estimate |
+| `hnod/suite.py`, `scripts/build_eval_suite.py`, `scripts/evaluate_suite.py`, `scripts/suite_card.py` | evaluation suite: protocol and scoring, building, scoring predictions, card |
+| `scripts/convert_egowalk.py`, `scripts/scenarios_to_frames.py`, `scripts/frames_card_section.py` | per-frame conversions and their dataset-card sections |
 | `scripts/` | download, stream, convert, evaluate, visualise, publish |
 | `scripts/generate_habitat_pointnav.py`, `scripts/prepare_hssd.py`, `tools/egl_software_only.c` | simulated point-goal scenarios in Habitat (HSSD / HM3D), CPU rendering shim |
 | `scripts/sync_parts_hf.py`, `vla/hub.py`, `scripts/setup_machine.sh` | keep generated data and checkpoints on the Hub; bootstrap a new machine |

@@ -100,3 +100,58 @@ for an **indoor** robot, with a set small enough to audit every scenario by hand
 
 - Output format: an (x, y) path cannot show an in-place turn. Whether predictions should carry heading
   (x, y, yaw) matters for closed loop; it does not change open-loop collision scoring.
+
+## As built: v1 (2026-10-05)
+
+Code: `scripts/build_eval_suite.py` (candidates, select, write), `hnod/suite.py` (protocol and scoring),
+`scripts/evaluate_suite.py` (score predictions), `vla/predict_suite.py` (score a trained policy). Published as
+the Hugging Face dataset `Jinyan0924/qwen_robotics_nav_eval`, config `v1`.
+
+- **Candidate pool, all held out from training:** CODa `coda_2hz` test + validation, JRDB `jrdb_2.5hz` all
+  splits, RoboSense `robosense_1hz` validation (it has no labelled test split), HSSD `hssd_2hz` test +
+  validation houses. JRDB as a whole is reserved for evaluation: it adds only about 1,300 frames to training
+  but holds most real indoor scenes with people. Training uses the train splits of CODa, RoboSense and HSSD
+  only (their per-frame configs publish only `train`).
+- **Protocol.** The model returns a path; the robot follows it at 0.5 m/s. The goal in the prompt lies on the
+  recorded reference path 3–10 m beyond the end of the scored horizon (or at the episode's end for simulated
+  episodes), so the goal no longer gives away the answer.
+- **At-fault collisions.** Recorded people do not react to the robot. Following a recording robot that moved at
+  about 1 m/s with a 0.5 m/s robot, people who walked behind it run into the slower robot (in one JRDB sequence
+  68% of scenarios had someone walk through a robot that stood still). As in nuPlan, a contact with a moving
+  agent counts only if, at first contact, the robot is moving and the agent is ahead of it. Contacts with
+  standing people, objects, the static map and lidar points always count.
+- **Environment labels.** CLIP alone was not reliable: it called the JRDB Clark Center courtyard and Memorial
+  Court, and every RoboSense covered walkway, "indoor". Every real candidate that CLIP did not call clearly
+  outdoor (287) was reviewed by eye; the labels are in `docs/eval_audit_v1.json`. HSSD point-goal episodes
+  partly run through the gardens around the houses (the generator's room-polygon restriction leaks); simulated
+  scenarios therefore need CLIP indoor probability >= 0.95, and near-duplicate views of one house (episodes
+  starting from the same pose) are removed by CLIP image-embedding similarity (> 0.94).
+- **Composition.** 100 indoor + 50 outdoor. Real indoor data is the binding constraint: after the 5 s spacing
+  rule and the checks below, the held-out real recordings yield only 25 independent indoor scenarios (CODa 8,
+  JRDB 17), so 75 indoor scenarios are simulated (HSSD houses, no people). Outdoor: RoboSense 33, CODa 10,
+  JRDB 7. Real scenarios are selected first; then tag coverage, then scenarios where naive baselines fail.
+- **Solvable as scored.** A scenario is valid only if its reference path, followed at 0.5 m/s under the same
+  at-fault rules, is collision-free and does not reverse, and the goal is at least 2 m away. Map collisions get a
+  5 cm tolerance (half a map cell): the HSSD planner grazes walls at exactly the robot radius, and 1–2 cm of map
+  quantisation decided whether its own path "collided". With this, the reference never collides; it succeeds in
+  79% (it is not the most direct route to the prompt's goal), naive planners in 20–23% indoors.
+- **Audit.** Every scenario was inspected on an audit image. Rejections (12 scenarios, 2 recordings whose
+  operator reverses or loops) and the 150 accepted scenarios are in `docs/eval_audit_v1.json`; the selection keeps
+  accepted scenarios fixed, so re-running it reproduces the published set and a change needs only the
+  replacements reviewed.
+- **Biggest limitation and the v2 plan.** Indoor results are dominated by simulated houses without people; the
+  25 real indoor scenarios (with crowds) are reported separately but are indicative only. v2 should add real
+  indoor recordings with lidar (MuSoHu, SCAND indoor parts) and HM3D (real scans) to replace simulated ones.
+
+## v2 (2026-10-05)
+
+All 100 indoor scenarios real. MuSoHu indoor walks (helmet-worn VLP-16 and ZED 2 at about 1.7 m, CC0) were converted
+with `scripts/convert_musohu.py`: sweeps levelled by the floor plane each sweep sees (the odometry's tilt left up to
+5 degrees, which turned distant floor into obstacles), people tracked in the lidar (`hnod/lidar_tracks.py`). 494
+candidates were labelled indoor / outdoor by eye; Trader Joe's (floor estimated at 1.0 m, shelves) and one recording
+without a detected floor were rejected. Selection kept v1's 75 accepted real scenarios and filled the 75 simulated
+slots with MuSoHu (at most 15 per recording); all 75 passed the audit.
+
+Consequence: naive baselines succeed far more often (straight to goal 69% indoor vs 20% in v1). Real indoor walks
+are mostly straight corridors and halls; harder real scenes (doorways, turns, dense crowds) are the gap for v3.
+SCAND could not be fetched from this machine (403 from its Dataverse); GND is outdoor-only.

@@ -19,6 +19,15 @@ class Config:
     frames: int = 11                    # how many of the 11 past+current images to feed (the most recent ones)
     ego_history: bool = True            # put the robot's past positions in the prompt
     action_scale: float = 0.0           # metres per unit of normalised action; 0 = fit from the training data
+    # per-frame training data (hnod.frames): samples are cut at load time (hnod.windows)
+    data_format: str = "scenarios"      # scenarios (21-step rows, cfg.data) | frames (cfg.frames_repos)
+    frames_repos: str = ""              # comma-separated repos with frames / episodes configs, e.g. ..._egowalk,..._coda
+    frames_mix: str = "proportional"    # proportional to size | sqrt (to its square root) | equal (each repo equally often)
+    spacing_m: float = 0.25             # frames: target waypoints every this many metres along the path (horizon of them)
+    past_dt_s: float = 0.5              # frames: history images every this many seconds
+    min_indoor_prob: float = 0.0        # frames: keep only samples whose current frame is at least this likely indoor
+    stream: bool = False                # frames: stream shards from the Hub (bounded disk) instead of downloading the split
+    val_items: int = 256                # stream: validation items (a single pass, spread over episodes)
     # --- model
     backbone: str = "Qwen/Qwen2.5-VL-3B-Instruct"
     backbone_mode: str = "lora"         # frozen | lora | full
@@ -27,6 +36,8 @@ class Config:
     lora_dropout: float = 0.05
     tune_vision: bool = False           # also adapt the vision encoder (LoRA/full modes)
     gradient_checkpointing: bool = True
+    pad_vision_mlp: bool = True         # zero-pad the vision MLP width to a multiple of 64 (same outputs, faster)
+    attn_implementation: str = ""       # "" (transformers default) | sdpa | eager | flash_attention_2 | a Hub kernel
     head: str = "regression"            # regression | flow
     denoiser: str = "mlp"               # mlp | dit  (flow head only)
     modes: int = 1                      # regression head: number of trajectory hypotheses (winner-takes-all)
@@ -74,6 +85,7 @@ class Config:
     eval_batches: int = 16              # validation loss over this many batches
     eval_scenarios: int = 64            # validation scenarios scored with the collision evaluator
     save_every: int = 500
+    keep_local: int = 3                 # local step_* checkpoints kept (older ones are deleted; the Hub has them)
     resume: str = ""                    # checkpoint directory, or "auto": <run>/last locally, else from hub_repo
     hub_repo: str = ""                  # HF model repo that mirrors <run>/last at every checkpoint (survives the machine)
     limit_train: int = 0                # debugging: use only this many training scenarios
