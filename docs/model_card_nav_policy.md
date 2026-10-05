@@ -47,7 +47,7 @@ are loaded by the project's code, not by `peft` alone.
 ## Use
 
 ```bash
-git clone -b frames-and-eval-suite https://github.com/naomili0924/qwen_robotics_open_dataset && cd qwen_robotics_open_dataset
+git clone https://github.com/naomili0924/qwen_robotics_open_dataset && cd qwen_robotics_open_dataset
 pip install -r requirements-train.txt
 
 # your own images (oldest first, 1 s apart, the last is the current view) and a goal in the robot frame

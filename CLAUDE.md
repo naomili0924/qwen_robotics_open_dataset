@@ -71,8 +71,15 @@ lost: `/dev/shm` (where large builds run) is a RAM disk, and `/workspace` is usu
 
 ## State on 2026-10-05
 
-Branch `frames-and-eval-suite` (on top of `episode-sources`) holds this work; open a PR for it.
+`main` holds everything through PR #4 (merged 2026-10-05 at the owner's request). New work: a branch and a PR.
 
+- **Training run `e1_all_sqrt`** (started 2026-10-05, `scripts/run_e1.sh`): LoRA on Qwen2.5-VL-3B, all four training
+  sources streamed from the Hub (`vla/stream.py`), 69,400 steps at about 4.8 s. Checkpoints go to the public model
+  repo `Jinyan0924/qwen_robotics_nav_policy` (`last/` every 1,000 steps, `step_<N>/` every 5,000 and `best/` by
+  validation loss via `scripts/watch_checkpoints.py`, which also scores milestones on the suite). The owner wants
+  the full epoch run before conclusions are drawn. Model card source: `docs/model_card_nav_policy.md`.
+- **Open with the owner:** the model predicts 2 m of path but RoboSense scenarios are scored over 10 s (5 m), so it
+  scores 0 of 33 there by construction; proposed: score every scenario over the first 4 s. Not changed yet.
 - **Per-frame training format** (`hnod/frames.py`, `hnod/windows.py`, `docs/model_formats.md`): configs `frames` +
   `episodes` per repo; samples (history, waypoints by distance, goal beyond the horizon, prompt) are cut at load
   time. `vla` trains on it with `--data_format frames --frames_repos a,b,c` (`--frames_mix equal`,
@@ -87,7 +94,6 @@ Branch `frames-and-eval-suite` (on top of `episode-sources`) holds this work; op
   its people are tracked in the lidar (`hnod/lidar_tracks.py`). v2 is easier for naive planners than v1 (straight to
   goal: 69% vs 20% indoor success). GND is outdoor-only; SCAND's server (dataverse.tdl.org) returns 403 to this
   data-centre IP.
-- **Nothing has been trained yet**; the H100 machine of 2026-10-05 is the first with a usable GPU.
 - **Still open with the owner:** finishing the other 55 HSSD houses at 0.5 m/s; who the PI on the MP3D form is;
   the `goal` column of the published scenario sets still leaks the answer (the suite uses its own goals).
 - **Next:** first trained models (per-frame data, supervised), scored with `vla/predict_suite.py`; v2 of the
