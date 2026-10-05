@@ -82,6 +82,11 @@ Branch `frames-and-eval-suite` (on top of `episode-sources`) holds this work; op
   50 outdoor), `Jinyan0924/qwen_robotics_nav_eval`. Reserved for evaluation, never train or tune on them: all of
   JRDB, CODa test + validation, RoboSense validation, HSSD test + validation houses. Rebuild with
   `scripts/build_eval_suite.py candidates|select|write`; selection keeps the audit's `accepted` scenarios fixed.
+- **Evaluation suite v2** (default config, `docs/eval_audit_v2.json`): all 100 indoor scenarios real (75 MuSoHu, 17
+  JRDB, 8 CODa), same 50 outdoor. MuSoHu (`Jinyan0924/qwen_robotics_open_dataset_musohu`) is reserved for evaluation;
+  its people are tracked in the lidar (`hnod/lidar_tracks.py`). v2 is easier for naive planners than v1 (straight to
+  goal: 69% vs 20% indoor success). GND is outdoor-only; SCAND's server (dataverse.tdl.org) returns 403 to this
+  data-centre IP.
 - **Nothing has been trained yet**; the H100 machine of 2026-10-05 is the first with a usable GPU.
 - **Still open with the owner:** finishing the other 55 HSSD houses at 0.5 m/s; who the PI on the MP3D form is;
   the `goal` column of the published scenario sets still leaks the answer (the suite uses its own goals).

@@ -325,7 +325,7 @@ def select(df, n_indoor, n_outdoor, seed=0, emb=None, accepted=()):
             per_rec[(r.dataset, r.house)] += 1
             src_n[r.dataset] += 1
             times[(r.source, r.sequence, r.segment)].append(r.time_s)
-            if emb is not None:
+            if emb is not None and r.scenario_id in emb:
                 views[(r.dataset, r.house)].append(emb[r.scenario_id])
 
         for r in pool[pool["scenario_id"].isin(set(accepted))].itertuples():

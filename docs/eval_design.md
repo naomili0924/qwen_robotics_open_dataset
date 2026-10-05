@@ -142,3 +142,16 @@ the Hugging Face dataset `Jinyan0924/qwen_robotics_nav_eval`, config `v1`.
 - **Biggest limitation and the v2 plan.** Indoor results are dominated by simulated houses without people; the
   25 real indoor scenarios (with crowds) are reported separately but are indicative only. v2 should add real
   indoor recordings with lidar (MuSoHu, SCAND indoor parts) and HM3D (real scans) to replace simulated ones.
+
+## v2 (2026-10-05)
+
+All 100 indoor scenarios real. MuSoHu indoor walks (helmet-worn VLP-16 and ZED 2 at about 1.7 m, CC0) were converted
+with `scripts/convert_musohu.py`: sweeps levelled by the floor plane each sweep sees (the odometry's tilt left up to
+5 degrees, which turned distant floor into obstacles), people tracked in the lidar (`hnod/lidar_tracks.py`). 494
+candidates were labelled indoor / outdoor by eye; Trader Joe's (floor estimated at 1.0 m, shelves) and one recording
+without a detected floor were rejected. Selection kept v1's 75 accepted real scenarios and filled the 75 simulated
+slots with MuSoHu (at most 15 per recording); all 75 passed the audit.
+
+Consequence: naive baselines succeed far more often (straight to goal 69% indoor vs 20% in v1). Real indoor walks
+are mostly straight corridors and halls; harder real scenes (doorways, turns, dense crowds) are the gap for v3.
+SCAND could not be fetched from this machine (403 from its Dataverse); GND is outdoor-only.

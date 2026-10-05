@@ -80,7 +80,9 @@ def example_grid(audit_dir, ids, path):
 
 
 LICENCES = {"coda": "CC BY-NC-SA 4.0 (UT CODa)", "jrdb": "CC BY-NC-SA 3.0 (JRDB)",
-            "robosense": "CC BY-NC-SA 4.0 (RoboSense)", "hssd": "CC BY-NC 4.0 (HSSD)"}
+            "robosense": "CC BY-NC-SA 4.0 (RoboSense)", "hssd": "CC BY-NC 4.0 (HSSD)", "musohu": "CC0 (MuSoHu)"}
+HORIZON = {"coda": "5 s", "hssd": "5 s", "musohu": "5 s", "jrdb": "4 s", "robosense": "10 s"}
+NAMES = {"coda": "UT CODa", "jrdb": "JRDB", "robosense": "RoboSense", "hssd": "HSSD", "musohu": "MuSoHu"}
 
 
 def _table(d, n):
@@ -90,8 +92,13 @@ def _table(d, n):
 
 def write_card(path, dist, table, n, by_env_source, version, repo):
     t = table
+    srcs = sorted({src for _, src in by_env_source})
+    lic = "\n".join(f"| {k} | {LICENCES[k]} |" for k in srcs)
+    hor = ", ".join(f"{HORIZON[k]} for {NAMES[k]}" for k in srcs)
     real_in = sum(k for (env, src), k in by_env_source.items() if env == "indoor" and src != "hssd")
+    sim_note = "" 
     sim_in = sum(k for (env, src), k in by_env_source.items() if env == "indoor" and src == "hssd")
+    sim_note = f"; {sim_in} are simulated houses without people (report real-indoor results separately)" if sim_in else ""
     base_rows = "\n".join(
         f"| {b} | " + " | ".join(f"{t[b][env]['success']:.2f} / {t[b][env]['collided']:.2f} / {t[b][env]['progress_ratio']:.2f}"
                                  for env in ("all", "indoor", "outdoor")) + " |" for b in BASELINES)
@@ -121,7 +128,7 @@ configs:
 # Robot navigation evaluation suite ({version})
 
 {n} hand-audited scenarios for **image-in, path-out navigation policies of an indoor robot** (a walking
-humanoid, about 0.5 m/s): 100 indoor and 50 outdoor, drawn from four open datasets, each with a text prompt
+humanoid, about 0.5 m/s): 100 indoor and 50 outdoor, drawn from {len(srcs)} open datasets, each with a text prompt
 that contains the goal and 3D ground truth (lidar, tracked people, obstacle maps) for scoring. Built by
 [qwen_robotics_open_dataset](https://github.com/naomili0924/qwen_robotics_open_dataset)
 (`scripts/build_eval_suite.py`; design and decisions in `docs/eval_design.md`, every audit decision in
@@ -141,7 +148,7 @@ path (green), the goal of the prompt (star) and the naive baselines (dashed).*
   (0, 0), x forward, y left. **Never** the lidar, maps, tracks or the future part of `ego`: those are ground truth.
 - **Output:** a path, a list of (x, y) points in the same frame, any length and spacing.
 - **Execution:** the robot follows the path at **0.5 m/s** with perfect control over the scenario's horizon
-  (5 s for CODa and HSSD, 4 s for JRDB, 10 s for RoboSense); a path that ends early means it stops there.
+  ({hor}); a path that ends early means it stops there.
 - **Scores** (`hnod/suite.py`):
   - `collided`: hits a standing person or object, the static map (with a 5 cm tolerance for the 10 cm map grid),
     or, **at fault**, a moving person or vehicle: the robot is moving and the agent is ahead of it at first contact.
@@ -206,7 +213,8 @@ success is below 1. Naive planners collide often indoors: the set needs percepti
 
 1. **Candidates, all held out from training:** CODa `coda_2hz` test + validation, JRDB `jrdb_2.5hz` (all of
    JRDB is reserved for evaluation), RoboSense `robosense_1hz` validation, HSSD `hssd_2hz` test + validation
-   houses. The per-frame training configs of these sources publish only their train splits.
+   houses, and MuSoHu indoor walks (all of it reserved; people tracked in its lidar, not annotated). The per-frame
+   training configs of these sources publish only their train splits.
 2. **Goal:** a point on the recorded reference path 3–10 m beyond the end of the scored horizon (the end of the
    episode for simulated ones), at least 2 m away, so the goal does not give away the answer.
 3. **Validity:** the reference path, followed at 0.5 m/s, is collision-free and does not reverse; the reference
@@ -230,15 +238,15 @@ plus: `suite_id`, `suite_version`, `prompt`, `environment`, `scene`, `tags`, `so
 
 ## Limitations
 
-- **Real indoor data is scarce.** Only {real_in} indoor scenarios are real (CODa, JRDB, with people); {sim_in} are
-  simulated houses without people. Report real-indoor results separately (the tags make that easy); they are indicative.
+- **Indoor scenes:** {real_in} of the 100 indoor scenarios are real recordings{sim_note}.
+  MuSoHu people are tracked in its lidar, not annotated: missed or spurious people are possible.
 - **Open loop and non-reactive.** People in recordings do not react to the robot; the at-fault rule removes the
   worst artefacts, but interactions are not closed loop. Simulated scenarios could be run closed loop in Habitat.
 - **Small.** With {n} scenarios, two planners must differ by roughly 10–15 points in collision rate to be told apart
   reliably on one binary metric; continuous scores and paired comparisons help.
 - **Estimated tags.** Scene types are CLIP estimates; people tags come from the source's tracks.
-- **Different robots.** Recordings come from wheeled robots (camera 0.7–0.8 m high) and a simulated agent
-  (camera 1.25 m), not a humanoid: camera height and field of view vary on purpose (the suite is robot-agnostic).
+- **Different embodiments.** Recordings come from wheeled robots (camera 0.7–0.8 m high), a walking person's
+  helmet (MuSoHu, about 1.7 m) and a simulated agent: camera height and field of view vary on purpose.
 
 ## Licence
 
@@ -246,9 +254,9 @@ Each scenario keeps its source's licence, all non-commercial; see `LICENSE.md`:
 
 | Source | Licence |
 |---|---|
-""" + "\n".join(f"| {k} | {v} |" for k, v in LICENCES.items()) + """
+""" + lic + """
 
-Cite the source datasets: UT CODa, JRDB, RoboSense, HSSD.
+Cite the source datasets: """ + ", ".join(NAMES[k] for k in srcs) + """.
 """
     open(path, "w").write(text)
 
