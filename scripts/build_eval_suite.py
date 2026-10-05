@@ -447,7 +447,7 @@ def cmd_write(args):
     def fetch(item):
         shard, grp = item
         s = src[grp["source"].iloc[0]]
-        rel = shard.split(f"/src/{s['name']}/", 1)[1]
+        rel = shard[shard.index("/data/") + 1:]  # the file's path in the repo
         return hf_hub_download(s["repo"], rel, repo_type="dataset", local_dir=work / "src" / s["name"])
 
     from concurrent.futures import ThreadPoolExecutor

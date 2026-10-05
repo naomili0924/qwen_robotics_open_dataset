@@ -106,12 +106,15 @@ def load_frames(cfg, split):
     from hnod.windows import FrameWindows
     parts = []
     for repo in [r.strip() for r in cfg.frames_repos.split(",") if r.strip()]:
+        # name the split's files: load_dataset(repo, "frames", split=...) would download every split first
         try:
-            frames = load_dataset(repo, "frames", split=split, cache_dir=cfg.cache_dir)
-        except ValueError:  # some sources publish only a train split (their held-out data is evaluation data)
+            frames = load_dataset(repo, data_files={split: f"data/frames/{split}-*.parquet"}, split=split,
+                                  cache_dir=cfg.cache_dir)
+        except FileNotFoundError:  # some sources publish only a train split (their held-out data is evaluation data)
             print(f"{repo}: no {split} split, skipped", flush=True)
             continue
-        episodes = load_dataset(repo, "episodes", split=split, cache_dir=cfg.cache_dir)
+        episodes = load_dataset(repo, data_files={split: f"data/episodes/{split}-*.parquet"}, split=split,
+                                cache_dir=cfg.cache_dir)
         parts.append(FrameWindows(frames, episodes, window_config(cfg)))
     return parts
 

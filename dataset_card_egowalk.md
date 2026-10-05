@@ -105,8 +105,9 @@ from datasets import load_dataset
 from hnod.windows import FrameWindows, WindowConfig   # github.com/naomili0924/qwen_robotics_open_dataset
 
 repo = "Jinyan0924/qwen_robotics_open_dataset_egowalk"
-frames = load_dataset(repo, "frames", split="validation")     # train is 76 GB
-episodes = load_dataset(repo, "episodes", split="validation")
+# name the split's files: load_dataset(repo, "frames", split="validation") downloads every split first
+frames = load_dataset(repo, data_files={"validation": "data/frames/validation-*.parquet"}, split="validation")
+episodes = load_dataset(repo, data_files={"validation": "data/episodes/validation-*.parquet"}, split="validation")
 samples = FrameWindows(frames, episodes, WindowConfig(n_waypoints=8, spacing_m=0.25))
 s = samples[0]
 s["images"]   # 11 PIL images: the current frame and one every 0.5 s before it
@@ -114,6 +115,9 @@ s["prompt"]   # "Please walk towards the goal (7.9, 2.6)." or "Walk to the glass
 s["target"]   # (8, 3) waypoints x, y, yaw in the current frame: x forward, y left, metres
 s["stop"]     # (8,) true past the end of an episode that ends at rest
 ```
+
+The train split is 76 GB, and `datasets` keeps both the downloaded files (`HF_HOME`) and its own Arrow copy
+(`cache_dir`): put both on a disk with about 160 GB free.
 
 Samples are cut at load time, so horizon, waypoint spacing, history length and the share of language prompts
 are parameters, not properties of the data. Point goals lie 4–20 m further along the walked path (beyond the

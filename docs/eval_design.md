@@ -127,9 +127,18 @@ the Hugging Face dataset `Jinyan0924/qwen_robotics_nav_eval`, config `v1`.
   scenarios therefore need CLIP indoor probability >= 0.95, and near-duplicate views of one house (episodes
   starting from the same pose) are removed by CLIP image-embedding similarity (> 0.94).
 - **Composition.** 100 indoor + 50 outdoor. Real indoor data is the binding constraint: after the 5 s spacing
-  rule, the held-out real recordings yield only 27 independent indoor scenarios (CODa 8, JRDB 19), so 73 indoor
-  scenarios are simulated (HSSD houses, no people). Outdoor: RoboSense 34, CODa 9, JRDB 7. Real scenarios are
-  selected first; then tag coverage, then scenarios where naive baselines fail.
+  rule and the checks below, the held-out real recordings yield only 25 independent indoor scenarios (CODa 8,
+  JRDB 17), so 75 indoor scenarios are simulated (HSSD houses, no people). Outdoor: RoboSense 33, CODa 10,
+  JRDB 7. Real scenarios are selected first; then tag coverage, then scenarios where naive baselines fail.
+- **Solvable as scored.** A scenario is valid only if its reference path, followed at 0.5 m/s under the same
+  at-fault rules, is collision-free and does not reverse, and the goal is at least 2 m away. Map collisions get a
+  5 cm tolerance (half a map cell): the HSSD planner grazes walls at exactly the robot radius, and 1–2 cm of map
+  quantisation decided whether its own path "collided". With this, the reference never collides; it succeeds in
+  79% (it is not the most direct route to the prompt's goal), naive planners in 20–23% indoors.
+- **Audit.** Every scenario was inspected on an audit image. Rejections (12 scenarios, 2 recordings whose
+  operator reverses or loops) and the 150 accepted scenarios are in `docs/eval_audit_v1.json`; the selection keeps
+  accepted scenarios fixed, so re-running it reproduces the published set and a change needs only the
+  replacements reviewed.
 - **Biggest limitation and the v2 plan.** Indoor results are dominated by simulated houses without people; the
-  27 real indoor scenarios (with crowds) are reported separately but are indicative only. v2 should add real
+  25 real indoor scenarios (with crowds) are reported separately but are indicative only. v2 should add real
   indoor recordings with lidar (MuSoHu, SCAND indoor parts) and HM3D (real scans) to replace simulated ones.
