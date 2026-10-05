@@ -15,6 +15,7 @@ from .scenario import CURRENT, N_FUTURE, PEDESTRIAN
 
 ROBOT_SPEED = 0.5      # m/s
 GOAL_RADIUS = 0.5      # m, success radius where the horizon is long enough to reach the goal
+MAP_TOLERANCE = 0.05   # m, half a static-map cell: grazing a wall at exactly the robot radius is not a collision
 
 
 def _arc(path):
@@ -111,7 +112,7 @@ def score(row, pred_xy, speed=ROBOT_SPEED, radius=ev.DEFAULT_RADIUS):
     """All metrics for one scenario and one predicted path."""
     rate, goal = row["rate_hz"], np.asarray(row["goal"], float)
     steps = timed_positions(pred_xy, rate, speed)
-    res = ev.evaluate_scenario(row, steps, radius=radius)
+    res = ev.evaluate_scenario(row, steps, radius=radius, map_tolerance=MAP_TOLERANCE)
     res["collided_dynamic_any"] = res["collided_dynamic"]  # including being walked into (not counted)
     res["collided_dynamic"], res["clearance_dynamic"] = at_fault_dynamic(row, steps, radius)
     res["collided"] = res["collided_dynamic"] or res["collided_static"] or res["collided_map"]

@@ -143,6 +143,11 @@ def scan_shard(path, source, goals):
             clearance = min(r["clearance_map"], r["clearance_static"])
             ptags, n_people = suite.people_tags(row, ref)
             base = {k: suite.score(row, p) for k, p in suite.baseline_paths(row).items()}
+            # the reference under the suite protocol (followed at the robot speed): a scenario must be solvable as scored
+            rel = ref[1:] - ref[0]
+            proto = suite.score(row, rel)
+            heading0 = rel[min(1, len(rel) - 1)]
+            reverses = bool(rel[0, 0] < -0.05 or heading0[0] < -0.1)  # the recording platform backs up
             img = row["past_images"][-1]["bytes"] if row.get("past_images") else None
             thumb, lum = _thumb(img) if img else (None, float("nan"))
             rec = dict(
@@ -155,7 +160,9 @@ def scan_shard(path, source, goals):
                 ref_length=float(np.hypot(*np.diff(ref, axis=0).T).sum()),
                 path_tags=suite.path_tags(ref, np.asarray(goal), clearance),
                 luminance=lum, thumb=thumb, has_map=row.get("static_map") is not None,
-                has_lidar=row.get("future_lidar") is not None)
+                has_lidar=row.get("future_lidar") is not None,
+                ref_protocol_collided=bool(proto["collided"]), ref_protocol_progress=float(proto["progress_ratio"]),
+                ref_reverses=reverses)
             for k, b in base.items():
                 rec[f"{k}_collided"] = bool(b["collided"])
                 rec[f"{k}_success"] = bool(b["success"])
@@ -227,15 +234,26 @@ def clip_classes(tagger, images, texts):
 
 
 MAX_UNKNOWN = 0.3         # reference path at most this unobserved by the lidar map
+MIN_GOAL_M = 2.0          # the goal must be at least this far away in a straight line (a reversing or looping
+                          # reference can put the "goal beyond the horizon" right next to the start)
 MIN_GAP_S = 5.0           # scenarios from one recording at least this far apart in time
 MAX_PER_RECORDING = 15    # real recordings (indoor ones are few: a handful of sequences hold them all)
-MAX_PER_HOUSE = 3         # simulator houses
+MAX_PER_HOUSE = 4         # simulator houses
 MAX_HSSD_INDOOR = 0.75    # share of indoor scenarios that may be simulated (real indoor data is scarce in v1)
 OUTDOOR_AT = 0.3          # CLIP indoor probability at or below which a real scenario is outdoor (else reviewed)
 SIM_INDOOR_AT = 0.95      # simulator renders: gardens around the houses score 0.3-0.5, rooms about 0.999
+SIM_BLACK_SKY = 0.15      # ... and exteriors show the black background where a room would have a ceiling
 REAL_FIRST = 10.0         # real scenarios are taken before simulated ones whenever the constraints allow
 DUPLICATE_SIM = 0.94      # CLIP image-embedding cosine above which two scenarios count as the same view
 AUDIT = Path(__file__).resolve().parents[1] / "docs" / "eval_audit_{version}.json"
+
+
+def black_top(jpeg, frac=0.4, level=12):
+    """Share of near-black pixels in the top of an image (no ceiling: a simulated exterior)."""
+    if jpeg is None:
+        return 1.0
+    im = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+    return float((im[:int(im.shape[0] * frac)].max(2) < level).mean())
 
 
 def dataset_of(source_name):
@@ -249,20 +267,23 @@ def candidate_table(df, audit):
     clearly outdoor was looked at); simulated scenarios must look indoor to CLIP with high confidence.
     """
     reviewed, dropped = audit.get("environment", {}), audit.get("drop", {})
+    dropped_recordings = audit.get("drop_recordings", {})
     df = df.assign(dataset=df["source"].map(dataset_of))
     env = []
     for r in df.itertuples():
-        if r.scenario_id in dropped:
+        if r.scenario_id in dropped or f"{r.dataset}/{r.sequence}" in dropped_recordings:
             env.append(None)
         elif r.dataset == "hssd":
-            env.append("indoor" if r.indoor_prob >= SIM_INDOOR_AT else None)
+            env.append("indoor" if r.indoor_prob >= SIM_INDOOR_AT and black_top(r.thumb) <= SIM_BLACK_SKY else None)
         elif r.scenario_id in reviewed:
             env.append(reviewed[r.scenario_id])
         else:
             env.append("outdoor" if r.indoor_prob <= OUTDOOR_AT else None)  # unreviewed and not clearly outdoor
     df = df.assign(environment=env)
     ok = (df["environment"].notna() & ~df["ref_collided"] & ~df["ref_collided_lidar"] & ~df["start_overlap"]
-          & (df["ref_unknown"] <= MAX_UNKNOWN) & ~df["stationary_collided"] & df["thumb"].notna())
+          & (df["ref_unknown"] <= MAX_UNKNOWN) & ~df["stationary_collided"] & df["thumb"].notna()
+          & (df["goal"].map(lambda g: float(np.hypot(*g))) >= MIN_GOAL_M)
+          & ~df.get("ref_protocol_collided", False) & ~df.get("ref_reverses", False))
     df = df[ok].copy()
     df["scene"] = np.where(df["environment"] == "indoor", df["indoor_scene"], df["outdoor_scene"])
     df["house"] = np.where(df["dataset"] == "hssd", df["sequence"].str.split("_").str[0], df["sequence"])
@@ -280,10 +301,11 @@ def candidate_table(df, audit):
     return df
 
 
-def select(df, n_indoor, n_outdoor, seed=0, emb=None):
+def select(df, n_indoor, n_outdoor, seed=0, emb=None, accepted=()):
     """Greedy: tag coverage first, then difficulty; caps per recording / house / source; no near-duplicate views.
 
     emb: {scenario_id: unit CLIP image embedding of the current image}.
+    accepted: scenarios that passed the audit; they are kept (if still valid) and only the rest is filled.
     """
     rng = np.random.default_rng(seed)
     df = df.assign(rand_=rng.random(len(df)))
@@ -293,6 +315,19 @@ def select(df, n_indoor, n_outdoor, seed=0, emb=None):
         caps = {"hssd": int(round(MAX_HSSD_INDOOR * n))} if env == "indoor" else {}
         counts, per_rec, times, src_n, views = Counter(), Counter(), defaultdict(list), Counter(), defaultdict(list)
         picked = []
+
+        def take(r):
+            picked.append(r.scenario_id)
+            counts.update(r.tags)
+            per_rec[(r.dataset, r.house)] += 1
+            src_n[r.dataset] += 1
+            times[(r.source, r.sequence, r.segment)].append(r.time_s)
+            if emb is not None:
+                views[(r.dataset, r.house)].append(emb[r.scenario_id])
+
+        for r in pool[pool["scenario_id"].isin(set(accepted))].itertuples():
+            if len(picked) < n:
+                take(r)
         while len(picked) < n:
             best, best_score = None, -1.0
             for r in pool.itertuples():
@@ -319,13 +354,7 @@ def select(df, n_indoor, n_outdoor, seed=0, emb=None):
             if best is None:
                 print(f"{env}: only {len(picked)} scenarios satisfy the constraints", flush=True)
                 break
-            picked.append(best.scenario_id)
-            counts.update(best.tags)
-            per_rec[(best.dataset, best.house)] += 1
-            src_n[best.dataset] += 1
-            times[(best.source, best.sequence, best.segment)].append(best.time_s)
-            if emb is not None:
-                views[(best.dataset, best.house)].append(emb[best.scenario_id])
+            take(best)
         chosen += picked
     return df[df["scenario_id"].isin(chosen)].drop(columns=["rand_"])
 
@@ -340,8 +369,20 @@ def cmd_select(args):
         E = np.load(work / "clip_embeddings.npy")
         ids = pd.read_parquet(work / "clip_embeddings_ids.parquet")["scenario_id"]
         emb = dict(zip(ids, E))
+    if emb is not None:  # views that nearly match a rejected scenario of the same house / recording
+        cand_all = cand.assign(dataset=cand["source"].map(dataset_of))
+        cand_all["house"] = np.where(cand_all["dataset"] == "hssd", cand_all["sequence"].str.split("_").str[0],
+                                     cand_all["sequence"])
+        rejected = cand_all[cand_all["scenario_id"].isin(audit.get("drop", {}))]
+        bad = set()
+        for r in rejected.itertuples():
+            if r.scenario_id not in emb:
+                continue
+            same = df[(df["dataset"] == r.dataset) & (df["house"] == r.house)]
+            bad |= {x for x in same["scenario_id"] if x in emb and float(emb[x] @ emb[r.scenario_id]) > DUPLICATE_SIM}
+        df = df[~df["scenario_id"].isin(bad - set(audit.get("accepted", [])))]
     print("valid candidates:", len(df), dict(Counter(zip(df["environment"], df["dataset"]))), flush=True)
-    sel = select(df, args.indoor, args.outdoor, args.seed, emb)
+    sel = select(df, args.indoor, args.outdoor, args.seed, emb, audit.get("accepted", []))
     sel.drop(columns=["thumb"]).to_parquet(work / f"selected_{args.version}.parquet")
     print("selected:", len(sel), dict(Counter(zip(sel["environment"], sel["dataset"]))))
     tags = Counter(t for ts in sel["tags"] for t in ts)
@@ -401,10 +442,19 @@ def cmd_write(args):
     sel["suite_id"] = [f"{args.version}-{i:04d}" for i in range(len(sel))]
     info = sel.set_index("scenario_id")
     rows = []
-    for shard, grp in sel.groupby("shard"):
+    groups = list(sel.groupby("shard"))
+
+    def fetch(item):
+        shard, grp = item
         s = src[grp["source"].iloc[0]]
         rel = shard.split(f"/src/{s['name']}/", 1)[1]
-        local = hf_hub_download(s["repo"], rel, repo_type="dataset", local_dir=work / "src" / s["name"])
+        return hf_hub_download(s["repo"], rel, repo_type="dataset", local_dir=work / "src" / s["name"])
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(8) as pool:  # shards stay on disk: rewrites after an audit are then quick
+        locals_ = list(pool.map(fetch, groups))
+    for (shard, grp), local in zip(groups, locals_):
+        s = src[grp["source"].iloc[0]]
         want = set(grp["scenario_id"])
         for batch in pq.ParquetFile(local).iter_batches(batch_size=16):
             for row in batch.to_pylist():
@@ -419,7 +469,6 @@ def cmd_write(args):
                            goal_extra_m=float(m["goal_extra_m"]), goal=goal, task="pointgoal", instruction="")
                 row.setdefault("task", "pointgoal")
                 rows.append(row)
-        os.remove(local)
     rows.sort(key=lambda r: r["suite_id"])
     out = work / "suite" / args.version
     (out / "data").mkdir(parents=True, exist_ok=True)

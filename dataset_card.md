@@ -80,9 +80,10 @@ prompt) are cut at load time with `hnod.windows.FrameWindows`.
 |---|---|---|---|---|---|---|---|
 | train | 56 | 19,575 | 10 Hz | 0.5 | 1.7 | 3% | 0.94 m/s |
 
-Built from `coda_10hz` train: frames at 10 Hz, wheeled Clearpath Husky, front camera. Frames were collected from the scenario rows (each imaged frame once) and their poses mapped back to the
+Built from `coda_10hz` train: frames at 10 Hz, wheeled Clearpath Husky, front camera. Small: only CODa's annotated stretches were converted to scenarios. Frames were collected from the scenario rows (each imaged frame once) and their poses mapped back to the
 source's world frame; the last second or so of each recorded segment, which has poses but no images in the
-scenario rows, is dropped. Indoor / outdoor: `estimated:clip-vit-l14`. **Only the train split is published here: the
+scenario rows, is dropped. Indoor / outdoor: `estimated:clip-vit-l14`, a rough estimate: CLIP tends to call courtyards and
+covered walkways indoor (the evaluation suite's labels were reviewed by eye instead). **Only the train split is published here: the
 held-out splits of this source are part of the evaluation suite
 ([qwen_robotics_nav_eval](https://huggingface.co/datasets/Jinyan0924/qwen_robotics_nav_eval)) and must not be
 trained or tuned on.**

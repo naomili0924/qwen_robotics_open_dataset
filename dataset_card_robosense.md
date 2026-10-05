@@ -22,6 +22,14 @@ configs:
     path: data/robosense_1hz/train-*.parquet
   - split: validation
     path: data/robosense_1hz/validation-*.parquet
+- config_name: frames
+  data_files:
+  - split: train
+    path: data/frames/train-*.parquet
+- config_name: episodes
+  data_files:
+  - split: train
+    path: data/episodes/train-*.parquet
 ---
 
 # Robot Navigation Open Scenarios: RoboSense
@@ -50,6 +58,37 @@ protocol; this card lists what is different. Code: <https://github.com/naomili09
 Middle: bird's-eye view with the static map (dark = occupied), boxes and their future tracks (red
 pedestrians, orange cyclists, purple vehicles, grey likely operator), ego in green, goal as a star.
 Right: the lidar points of the last future step (black static, red dynamic).*
+
+<!-- per-frame:begin -->
+## Per-frame training configs: `frames` and `episodes`
+
+The same recordings in the per-frame training format of
+[qwen_robotics_open_dataset](https://github.com/naomili0924/qwen_robotics_open_dataset) (described in full on the
+[EgoWalk card](https://huggingface.co/datasets/Jinyan0924/qwen_robotics_open_dataset_egowalk)): one row per
+camera frame with the raw metric pose (x, y, z, yaw), plus one row per episode with camera, environment and
+embodiment. Training samples (history, waypoints by distance along the path, a goal beyond the horizon, a text
+prompt) are cut at load time with `hnod.windows.FrameWindows`.
+
+| Split | Episodes | Frames | Rate | Hours | km | Indoor frames | Median speed |
+|---|---|---|---|---|---|---|---|
+| train | 708 | 25,596 | 1 Hz | 6.9 | 16.9 | 6% | 0.69 m/s |
+
+Built from `robosense_1hz` train: frames at 1 Hz (sparse; the source scenario set was cut at 1 Hz), wheeled robot, front camera. Frames were collected from the scenario rows (each imaged frame once) and their poses mapped back to the
+source's world frame; the last second or so of each recorded segment, which has poses but no images in the
+scenario rows, is dropped. Indoor / outdoor: `estimated:clip-vit-l14`, a rough estimate: CLIP tends to call courtyards and
+covered walkways indoor (the evaluation suite's labels were reviewed by eye instead). **Only the train split is published here: the
+held-out splits of this source are part of the evaluation suite
+([qwen_robotics_nav_eval](https://huggingface.co/datasets/Jinyan0924/qwen_robotics_nav_eval)) and must not be
+trained or tuned on.**
+
+```python
+from datasets import load_dataset
+from hnod.windows import FrameWindows
+frames = load_dataset("Jinyan0924/qwen_robotics_open_dataset_robosense", "frames", split="train")
+episodes = load_dataset("Jinyan0924/qwen_robotics_open_dataset_robosense", "episodes", split="train")
+samples = FrameWindows(frames, episodes)
+```
+<!-- per-frame:end -->
 
 ## What is in it
 

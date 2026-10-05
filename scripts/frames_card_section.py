@@ -53,7 +53,8 @@ prompt) are cut at load time with `hnod.windows.FrameWindows`.
 
 {note} Frames were collected from the scenario rows (each imaged frame once) and their poses mapped back to the
 source's world frame; the last second or so of each recorded segment, which has poses but no images in the
-scenario rows, is dropped. Indoor / outdoor: `{method}`. **Only the train split is published here: the
+scenario rows, is dropped. Indoor / outdoor: `{method}`, a rough estimate: CLIP tends to call courtyards and
+covered walkways indoor (the evaluation suite's labels were reviewed by eye instead). **Only the train split is published here: the
 held-out splits of this source are part of the evaluation suite
 ([qwen_robotics_nav_eval](https://huggingface.co/datasets/Jinyan0924/qwen_robotics_nav_eval)) and must not be
 trained or tuned on.**

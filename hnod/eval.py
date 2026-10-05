@@ -77,12 +77,14 @@ def _dense(values, n_sub, angle=False):
 
 
 def evaluate_scenario(row, pred_xy, radius=DEFAULT_RADIUS, use_map=True, pedestrian_radius=PEDESTRIAN_RADIUS,
-                      use_lidar=True):
+                      use_lidar=True, map_tolerance=0.0):
     """Score one predicted future path.
 
     row: a dataset row (dict).  pred_xy: (N_FUTURE, 2) scenario-frame positions
     for steps current+1 .. current+N_FUTURE.  pedestrian_radius: pedestrians are
     treated as discs of this radius around their box centre; None uses their boxes.
+    map_tolerance: a path must come this much closer than `radius` to an occupied map cell
+    to collide with it (distances on the map are quantised to MAP_RES).
     """
     pred_xy = np.asarray(pred_xy, dtype=np.float64)
     assert pred_xy.shape == (N_FUTURE, 2), pred_xy.shape
@@ -170,8 +172,8 @@ def evaluate_scenario(row, pred_xy, radius=DEFAULT_RADIUS, use_map=True, pedestr
         if inside.any():
             d = dist[r[inside], c[inside]]
             res["clearance_map"] = float(d.min() - radius)
-            res["collided_map"] = bool((d <= radius).any())
-            hit_time[np.flatnonzero(inside)[d <= radius]] = True
+            res["collided_map"] = bool((d <= radius - map_tolerance).any())
+            hit_time[np.flatnonzero(inside)[d <= radius - map_tolerance]] = True
             res["unknown_fraction"] = float((img[r[inside], c[inside]] == PIX_UNKNOWN).mean())
 
     lidar = row.get("future_lidar") if use_lidar else None
