@@ -111,7 +111,8 @@ class NavPolicy(nn.Module):
         """Backbone tokens for the heads: summary (B,H) at the last prompt token, memory (B,L,H), mask, kin."""
         inputs = {k: batch[k] for k in INPUT_KEYS}
         inputs["use_cache"] = False
-        ctx = torch.enable_grad() if self.backbone_trains else torch.no_grad()
+        # no graph under predict()'s no_grad (enable_grad here used to re-enable it and cost 10+ GB at inference)
+        ctx = torch.enable_grad() if self.backbone_trains and torch.is_grad_enabled() else torch.no_grad()
         with ctx, torch.autocast("cuda", dtype=torch.bfloat16):
             hs = self.backbone(**inputs).last_hidden_state
         mask = batch["attention_mask"].bool()

@@ -38,9 +38,13 @@ class SuiteDataset(Dataset):
             item = NavDataset(self.rows, cfg)[i]
             item["scenario_id"] = row["suite_id"]
             return item
-        images = [im.convert("RGB") for im in row["past_images"][-cfg.frames:]]
-        e = row["ego"]
-        past = np.stack([e["x"], e["y"]], 1)[:CURRENT + 1] - [e["x"][CURRENT], e["y"][CURRENT]]
+        # the history the policy was trained on: poses every cfg.past_dt_s seconds, oldest first, clamped to the
+        # start of the scenario's history (as at the start of a training episode); the last cfg.frames images
+        e, rate = row["ego"], row["rate_hz"]
+        back = np.round(np.arange(CURRENT, -1, -1) * cfg.past_dt_s * rate).astype(int)
+        idx = np.clip(CURRENT - back, 0, CURRENT)
+        past = np.stack([e["x"], e["y"]], 1)[idx] - [e["x"][CURRENT], e["y"][CURRENT]]
+        images = [row["past_images"][i].convert("RGB") for i in idx[-cfg.frames:]]
         s = dict(past_xy=past.astype(np.float32), velocity=np.array([e["vx"][CURRENT], e["vy"][CURRENT]], np.float32),
                  prompt=row["prompt"])
         kin = np.r_[past.ravel(), s["velocity"], row["goal"]].astype(np.float32)
@@ -65,11 +69,11 @@ def main():
                             split="train")
     else:
         rows = load_dataset(args.repo, args.version, split="test")
-    pipe = NavigationPipeline.from_pretrained(args.checkpoint, batch_size=args.batch_size, workers=4)
+    pipe = NavigationPipeline.from_pretrained(args.checkpoint, batch_size=args.batch_size, workers=4, stream=False)
     cfg, model = pipe.cfg, pipe.model
     model.eval()
     loader = make_loader(SuiteDataset(rows, cfg), cfg, pipe.collate, shuffle=False)
-    preds, results = {}, []
+    preds, results, order = {}, [], []
     with torch.no_grad():
         for batch in loader:
             batch = to_device(batch, model.device)
@@ -78,9 +82,18 @@ def main():
                 path = traj[i, :, :2]
                 preds[sid] = path.round(3).tolist()
                 results.append(suite.score(rows[idx], path, speed=args.speed))
+                order.append(idx)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     json.dump(preds, open(args.out, "w"))
-    print(json.dumps(suite.aggregate(results), indent=2))
+    overall = suite.aggregate(results)
+    by = {}
+    for key in ("environment", "source"):
+        for v in sorted(set(rows[key])):
+            sub = [r for r, x in zip(results, order) if rows[x][key] == v]
+            by[f"{key}:{v}"] = {k: round(m, 3) for k, m in suite.aggregate(sub).items()}
+    print(json.dumps(dict(overall=overall, groups=by), indent=1))
+    json.dump(dict(overall=overall, groups=by, version=args.version, checkpoint=args.checkpoint, speed=args.speed),
+              open(str(args.out).replace(".json", "") + "_metrics.json", "w"), indent=1)
 
 
 if __name__ == "__main__":
