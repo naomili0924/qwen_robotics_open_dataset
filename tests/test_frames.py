@@ -94,3 +94,16 @@ def test_standing_jitter_is_not_travel():
     walk = np.c_[np.linspace(0, 5, 50), np.zeros(50)] + still[-1]
     s = arc_length(np.r_[still, walk])
     assert s[199] < 0.1 and abs(s[-1] - 5) < 0.2
+
+
+def test_frame_nav_dataset_items_match_the_scenario_layout():
+    from vla.config import Config
+    from vla.data import KIN_DIM, FrameNavDataset, fit_action_scale_frames, window_config
+    cfg = Config(data_format="frames", horizon=8, frames=4, action_scale=2.0)
+    ds = FrameNavDataset([_windows(window_config(cfg)), _windows(window_config(cfg))], cfg)
+    item = ds[3]
+    assert item["kin"].shape == (KIN_DIM,) and item["target"].shape == (8, 2) and len(item["images"]) == 4
+    assert "waypoints" in item["prompt"] and item["prompt"].count("(") >= 2
+    w = ds.weights("equal")
+    assert np.isclose(w[:len(ds.parts[0])].sum(), w[len(ds.parts[0]):].sum())
+    assert fit_action_scale_frames(ds, cfg) >= 1.0

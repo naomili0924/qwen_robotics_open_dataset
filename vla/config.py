@@ -19,6 +19,13 @@ class Config:
     frames: int = 11                    # how many of the 11 past+current images to feed (the most recent ones)
     ego_history: bool = True            # put the robot's past positions in the prompt
     action_scale: float = 0.0           # metres per unit of normalised action; 0 = fit from the training data
+    # per-frame training data (hnod.frames): samples are cut at load time (hnod.windows)
+    data_format: str = "scenarios"      # scenarios (21-step rows, cfg.data) | frames (cfg.frames_repos)
+    frames_repos: str = ""              # comma-separated repos with frames / episodes configs, e.g. ..._egowalk,..._coda
+    frames_mix: str = "proportional"    # proportional to size | equal (each repo drawn equally often)
+    spacing_m: float = 0.25             # frames: target waypoints every this many metres along the path (horizon of them)
+    past_dt_s: float = 0.5              # frames: history images every this many seconds
+    min_indoor_prob: float = 0.0        # frames: keep only samples whose current frame is at least this likely indoor
     # --- model
     backbone: str = "Qwen/Qwen2.5-VL-3B-Instruct"
     backbone_mode: str = "lora"         # frozen | lora | full

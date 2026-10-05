@@ -38,6 +38,7 @@ class WindowConfig:
     min_future_m: float = 0.5        # samples whose remaining path is shorter are skipped (unless at rest)
     stride: int = 1                  # every stride-th frame is a sample
     still_m: float = 0.05            # movement below this (odometry jitter) does not count as travel
+    min_indoor_prob: float = 0.0     # keep only samples whose current frame is at least this likely indoor
     seed: int = 0
 
 
@@ -111,7 +112,11 @@ class FrameWindows:
             need = c.min_future_m if at_rest else c.n_waypoints * c.spacing_m
             rows = np.arange(a, b, c.stride)
             left = self.s[b - 1] - self.s[rows]
-            out.append(rows[(left >= need) | (at_rest & (left >= 0))])
+            keep = (left >= need) | (at_rest & (left >= 0))
+            prob = self.episodes.get(self.ep_ids[e], {}).get("frame_indoor_prob")
+            if c.min_indoor_prob > 0 and prob is not None and len(prob) == b - a:
+                keep &= np.asarray(prob)[rows - a] >= c.min_indoor_prob
+            out.append(rows[keep])
         return np.concatenate(out) if out else np.zeros(0, int)
 
     def __len__(self):

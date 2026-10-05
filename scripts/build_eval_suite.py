@@ -228,38 +228,50 @@ def clip_classes(tagger, images, texts):
 
 MAX_UNKNOWN = 0.3         # reference path at most this unobserved by the lidar map
 MIN_GAP_S = 5.0           # scenarios from one recording at least this far apart in time
-MAX_PER_RECORDING = 10    # real recordings (a few sequences each hold most of the data)
+MAX_PER_RECORDING = 15    # real recordings (indoor ones are few: a handful of sequences hold them all)
 MAX_PER_HOUSE = 3         # simulator houses
-MAX_HSSD_INDOOR = 0.6     # share of indoor scenarios that may be simulated
-INDOOR_AT, OUTDOOR_AT = 0.7, 0.3  # CLIP indoor probability thresholds; in between is left out
+MAX_HSSD_INDOOR = 0.75    # share of indoor scenarios that may be simulated (real indoor data is scarce in v1)
+OUTDOOR_AT = 0.3          # CLIP indoor probability at or below which a real scenario is outdoor (else reviewed)
+SIM_INDOOR_AT = 0.95      # simulator renders: gardens around the houses score 0.3-0.5, rooms about 0.999
+REAL_FIRST = 10.0         # real scenarios are taken before simulated ones whenever the constraints allow
+DUPLICATE_SIM = 0.94      # CLIP image-embedding cosine above which two scenarios count as the same view
+AUDIT = Path(__file__).resolve().parents[1] / "docs" / "eval_audit_{version}.json"
 
 
 def dataset_of(source_name):
     return source_name.split("_")[0]
 
 
-def candidate_table(df):
-    """Valid candidates with their environment, scene, tags and difficulty."""
-    env_known = {s["name"]: s["environment"] for s in SOURCES}
+def candidate_table(df, audit):
+    """Valid candidates with their environment, scene, tags and difficulty.
+
+    Environment: real data uses the reviewed labels of the audit file (every candidate CLIP did not call
+    clearly outdoor was looked at); simulated scenarios must look indoor to CLIP with high confidence.
+    """
+    reviewed, dropped = audit.get("environment", {}), audit.get("drop", {})
+    df = df.assign(dataset=df["source"].map(dataset_of))
     env = []
     for r in df.itertuples():
-        known = env_known[r.source]
-        env.append(known or ("indoor" if r.indoor_prob >= INDOOR_AT else "outdoor" if r.indoor_prob <= OUTDOOR_AT
-                             else None))
+        if r.scenario_id in dropped:
+            env.append(None)
+        elif r.dataset == "hssd":
+            env.append("indoor" if r.indoor_prob >= SIM_INDOOR_AT else None)
+        elif r.scenario_id in reviewed:
+            env.append(reviewed[r.scenario_id])
+        else:
+            env.append("outdoor" if r.indoor_prob <= OUTDOOR_AT else None)  # unreviewed and not clearly outdoor
     df = df.assign(environment=env)
     ok = (df["environment"].notna() & ~df["ref_collided"] & ~df["ref_collided_lidar"] & ~df["start_overlap"]
           & (df["ref_unknown"] <= MAX_UNKNOWN) & ~df["stationary_collided"] & df["thumb"].notna())
     df = df[ok].copy()
     df["scene"] = np.where(df["environment"] == "indoor", df["indoor_scene"], df["outdoor_scene"])
-    df["dataset"] = df["source"].map(dataset_of)
     df["house"] = np.where(df["dataset"] == "hssd", df["sequence"].str.split("_").str[0], df["sequence"])
     fails = []
     tags = []
     for r in df.itertuples():
         f = [b for b in ("straight_ahead", "straight_to_goal") if not getattr(r, f"{b}_success")]
         fails.append(len(f))
-        t = [f"env:{r.environment}", f"source:{dataset_of(r.source)}", f"scene:{r.scene}", *r.people_tags,
-             *r.path_tags]
+        t = [f"env:{r.environment}", f"source:{r.dataset}", f"scene:{r.scene}", *r.people_tags, *r.path_tags]
         t += [f"baseline_fails:{b}" for b in f]
         if r.luminance < 60:
             t.append("lighting:dim")
@@ -268,14 +280,18 @@ def candidate_table(df):
     return df
 
 
-def select(df, n_indoor, n_outdoor, seed=0):
+def select(df, n_indoor, n_outdoor, seed=0, emb=None):
+    """Greedy: tag coverage first, then difficulty; caps per recording / house / source; no near-duplicate views.
+
+    emb: {scenario_id: unit CLIP image embedding of the current image}.
+    """
     rng = np.random.default_rng(seed)
     df = df.assign(rand_=rng.random(len(df)))
     chosen = []
     for env, n in (("indoor", n_indoor), ("outdoor", n_outdoor)):
         pool = df[df["environment"] == env]
         caps = {"hssd": int(round(MAX_HSSD_INDOOR * n))} if env == "indoor" else {}
-        counts, per_rec, times, src_n = Counter(), Counter(), defaultdict(list), Counter()
+        counts, per_rec, times, src_n, views = Counter(), Counter(), defaultdict(list), Counter(), defaultdict(list)
         picked = []
         while len(picked) < n:
             best, best_score = None, -1.0
@@ -289,10 +305,15 @@ def select(df, n_indoor, n_outdoor, seed=0):
                     continue
                 if any(abs(r.time_s - t) < MIN_GAP_S for t in times[(r.source, r.sequence, r.segment)]):
                     continue
+                # simulator episodes of one house can start from the same pose; real recordings are kept apart
+                # by MIN_GAP_S instead (corridor frames seconds apart look alike but are different situations)
+                if emb is not None and r.dataset == "hssd" and views[rec] \
+                        and max(float(emb[r.scenario_id] @ v) for v in views[rec]) > DUPLICATE_SIM:
+                    continue
                 # tag coverage first, then difficulty, then spread over recordings and sources
                 cover = sum(1.0 / (1 + counts[t]) for t in r.tags if not t.startswith("source:"))
                 sc = cover + 1.5 * r.n_baseline_fails + 0.5 / (1 + per_rec[rec]) + 0.5 / (1 + src_n[r.dataset]) \
-                    + 0.1 * r.rand_
+                    + 0.1 * r.rand_ + (REAL_FIRST if r.dataset != "hssd" else 0.0)
                 if sc > best_score:
                     best, best_score = r, sc
             if best is None:
@@ -303,16 +324,24 @@ def select(df, n_indoor, n_outdoor, seed=0):
             per_rec[(best.dataset, best.house)] += 1
             src_n[best.dataset] += 1
             times[(best.source, best.sequence, best.segment)].append(best.time_s)
+            if emb is not None:
+                views[(best.dataset, best.house)].append(emb[best.scenario_id])
         chosen += picked
     return df[df["scenario_id"].isin(chosen)].drop(columns=["rand_"])
 
 
 def cmd_select(args):
     work = Path(args.work)
-    df = candidate_table(pd.concat([pd.read_parquet(p) for p in sorted(work.glob("candidates_*.parquet"))],
-                                   ignore_index=True))
+    audit = json.load(open(str(AUDIT).format(version=args.version)))
+    cand = pd.concat([pd.read_parquet(p) for p in sorted(work.glob("candidates_*.parquet"))], ignore_index=True)
+    df = candidate_table(cand, audit)
+    emb = None
+    if (work / "clip_embeddings.npy").exists():
+        E = np.load(work / "clip_embeddings.npy")
+        ids = pd.read_parquet(work / "clip_embeddings_ids.parquet")["scenario_id"]
+        emb = dict(zip(ids, E))
     print("valid candidates:", len(df), dict(Counter(zip(df["environment"], df["dataset"]))), flush=True)
-    sel = select(df, args.indoor, args.outdoor, args.seed)
+    sel = select(df, args.indoor, args.outdoor, args.seed, emb)
     sel.drop(columns=["thumb"]).to_parquet(work / f"selected_{args.version}.parquet")
     print("selected:", len(sel), dict(Counter(zip(sel["environment"], sel["dataset"]))))
     tags = Counter(t for ts in sel["tags"] for t in ts)

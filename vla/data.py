@@ -93,6 +93,81 @@ class NavDataset(Dataset):
                     aux={t.name: t.target(row, self.cfg) for t in self.tasks})
 
 
+# ----------------------------------------------------------------------------- per-frame data (hnod.frames)
+
+def window_config(cfg):
+    from hnod.windows import WindowConfig
+    return WindowConfig(n_waypoints=cfg.horizon, spacing_m=cfg.spacing_m, n_past=CURRENT, past_dt_s=cfg.past_dt_s,
+                        min_indoor_prob=cfg.min_indoor_prob, seed=cfg.seed)
+
+
+def load_frames(cfg, split):
+    """One hnod.windows.FrameWindows per repo in cfg.frames_repos that has this split."""
+    from hnod.windows import FrameWindows
+    parts = []
+    for repo in [r.strip() for r in cfg.frames_repos.split(",") if r.strip()]:
+        try:
+            frames = load_dataset(repo, "frames", split=split, cache_dir=cfg.cache_dir)
+        except ValueError:  # some sources publish only a train split (their held-out data is evaluation data)
+            print(f"{repo}: no {split} split, skipped", flush=True)
+            continue
+        episodes = load_dataset(repo, "episodes", split=split, cache_dir=cfg.cache_dir)
+        parts.append(FrameWindows(frames, episodes, window_config(cfg)))
+    return parts
+
+
+def frames_prompt(s, cfg):
+    v = np.hypot(*s["velocity"])
+    parts = [f"Image interval {cfg.past_dt_s:.1f} s. Current speed {v:.2f} m/s."]
+    if cfg.ego_history:
+        past = ", ".join(f"({x:.1f}, {y:.1f})" for x, y in s["past_xy"])
+        parts.append(f"Robot positions over the last {len(s['past_xy']) - 1} images, oldest first: {past}.")
+    parts.append(s["prompt"])
+    parts.append(f"Predict {cfg.horizon} waypoints along the robot's path, {cfg.spacing_m:.2f} m apart.")
+    return " ".join(parts)
+
+
+class FrameNavDataset(Dataset):
+    """Training items from per-frame data, in the same layout as NavDataset (no auxiliary tasks)."""
+
+    def __init__(self, parts, cfg):
+        self.parts, self.cfg = parts, cfg
+        self.cum = np.cumsum([0] + [len(p) for p in parts])
+
+    def __len__(self):
+        return int(self.cum[-1])
+
+    def _locate(self, i):
+        part = int(np.searchsorted(self.cum, i, side="right") - 1)
+        return self.parts[part], i - int(self.cum[part])
+
+    def sample(self, i):
+        w, k = self._locate(i)
+        return w.sample(k)
+
+    def weights(self, mix):
+        """Per-item sampling weights: proportional (all 1) or equal total weight per source."""
+        if mix == "equal":
+            return np.concatenate([np.full(len(p), 1.0 / max(1, len(p))) for p in self.parts])
+        return np.ones(len(self))
+
+    def __getitem__(self, i):
+        w, k = self._locate(i)
+        s = w[k]
+        goal = s["goal"] if s["goal_given"] else np.zeros(2, np.float32)
+        kin = np.r_[s["past_xy"].ravel(), s["velocity"], goal].astype(np.float32)
+        return dict(index=i, scenario_id=f"{s['episode_id']}:{s['frame_index']}",
+                    images=[im.convert("RGB") for im in s["images"][-self.cfg.frames:]],
+                    prompt=frames_prompt(s, self.cfg), kin=kin,
+                    target=s["target"][:, :self.cfg.action_dim] / self.cfg.action_scale, aux={})
+
+
+def fit_action_scale_frames(ds, cfg, n=512):
+    idx = np.random.default_rng(0).choice(len(ds), size=min(n, len(ds)), replace=False)
+    vals = np.concatenate([np.abs(ds.sample(int(i))["target"][:, :cfg.action_dim]).ravel() for i in idx])
+    return float(max(1.0, np.percentile(vals, 95)))
+
+
 def columns_for(cfg, tasks):
     cols = list(INPUT_COLUMNS)
     for t in tasks:
