@@ -144,6 +144,35 @@ python scripts/sync_parts_hf.py --repo <user>/<name> --out data/hf_hssd --config
 Each scene runs in its own subprocess (habitat-sim can die in native code); finished scenes leave
 `.done` markers, so re-running the same command resumes.
 
+The same generator follows published episodes instead of sampling its own. Rows then carry
+`task` (`vln` / `objectnav`) and the `instruction` text; the agent stands still for the first
+10 steps (it starts from rest) and the last 10 (it stops at the goal), so short episodes still
+give scenarios. Stair sections are dropped by the path check (the scenario frame assumes a flat floor).
+
+```bash
+# VLN-CE R2R / RxR (Matterport3D scenes under data/scene_datasets/mp3d/)
+/venv/habitat/bin/python scripts/generate_habitat_pointnav.py --task vln --split train --config r2r_2hz \
+    --episodes data/R2R_VLNCE_v1-3/train/train.json.gz --scene-root data/scene_datasets --out data/hf_r2r
+# ObjectNav HM3D v2 (scenes under data/scene_datasets/hm3d_v0.2/)
+/venv/habitat/bin/python scripts/generate_habitat_pointnav.py --task objectnav --split train --config objectnav_hm3d_2hz \
+    --episodes data/objectnav_hm3d_v2/train/content/*.json.gz --scene-root data/scene_datasets --out data/hf_objectnav \
+    --dataset-config data/scene_datasets/hm3d_v0.2/hm3d_annotated_basis.scene_dataset_config.json
+```
+
+Both modes were tested with episode files in these formats on an HSSD house; they have **not** been
+run on MP3D / HM3D scenes yet (the scenes need credentials).
+
+## Convert nuScenes
+
+```bash
+python scripts/convert_nuscenes.py --raw /data/nuscenes --version v1.0-trainval --out data/hf_nuscenes
+```
+
+Key frames only (2 Hz, 5 s + 5 s), `CAM_FRONT` + `LIDAR_TOP` + 3D boxes, read straight from the JSON
+tables. **Not yet run on real data**: `tests/test_nuscenes.py` checks the geometry on a synthetic dataset
+written in the nuScenes format. At driving speeds the 5 s future leaves the 40 m static map, so the
+map check only covers the first part of the path; boxes and lidar points cover 28 m.
+
 ## Moving to another machine
 
 Nothing needed to continue lives only on the machine: code is here, datasets and checkpoints are on the
@@ -266,7 +295,7 @@ Qwen2.5-VL-3B with LoRA at 448 px per frame takes about 13 GB at batch 4 and 2 s
 
 | Path | Purpose |
 |---|---|
-| `hnod/coda.py`, `hnod/robosense.py`, `hnod/jrdb.py` | source readers: labelled segments with world-frame ego poses, boxes and camera calibration |
+| `hnod/coda.py`, `hnod/robosense.py`, `hnod/jrdb.py`, `hnod/nuscenes.py` | source readers: labelled segments with world-frame ego poses, boxes and camera calibration |
 | `scripts/refine_jrdb_odometry.py` | lidar scan matching to replace JRDB's drifting wheel odometry |
 | `hnod/scenario.py` | track clean-up, operator detection, windowing into ego-centric scenarios |
 | `hnod/lidar_bev.py` | lidar sweep to ground/obstacle grid and thinned, ground-flagged points |

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Generate point-goal navigation scenarios in Habitat (HM3D or any navmesh scene).
+"""Generate navigation scenarios in Habitat: sampled point-goal episodes, or VLN-CE / ObjectNav episode files.
 
 Runs in the habitat-sim environment (python 3.9, see README).  For every scene it
 draws random start/goal pairs, follows the navmesh shortest path at walking speed,
@@ -235,6 +235,82 @@ def clear_path(pf, points, margin=PATH_MARGIN, iters=8):
     return pts
 
 
+def load_episodes(files, task, scene_key=None):
+    """Episodes of a habitat-lab dataset file, grouped by scene: {scene_id: [episode, ...]}.
+
+    task "vln": VLN-CE R2R / RxR files ({"episodes": [{scene_id, start_position, reference_path,
+    instruction: {instruction_text}}]}); the path visits the reference waypoints.
+    task "objectnav": ObjectNav content files ({"episodes": [{scene_id, start_position,
+    object_category}], "goals_by_category": {"<scene file>_<category>": [{view_points}]}}); the path
+    is the shortest one to any view point of any object of the category.
+    Each returned episode is dict(id, start, waypoints | goals, instruction).
+    """
+    import gzip
+    out = {}
+    for f in files:
+        d = json.load(gzip.open(f) if str(f).endswith(".gz") else open(f))
+        views = {}
+        for ep in d.get("episodes", []):
+            sid = ep["scene_id"]
+            if scene_key is not None and sid != scene_key:
+                continue
+            e = dict(id=str(ep["episode_id"]), start=ep["start_position"])
+            if task == "vln":
+                e["waypoints"] = ep["reference_path"]
+                e["instruction"] = ep["instruction"]["instruction_text"].strip()
+            elif task == "objectnav":
+                cat = ep["object_category"]
+                key = f"{Path(sid).name}_{cat}"
+                if key not in views:
+                    views[key] = [v["agent_state"]["position"] for g in d["goals_by_category"].get(key, [])
+                                  for v in g.get("view_points", [])]
+                if not views[key]:
+                    continue
+                e["goals"] = views[key]
+                e["instruction"] = f"Find a {cat.replace('_', ' ')} and stop near it."
+            else:
+                raise ValueError(task)
+            out.setdefault(sid, []).append(e)
+    return out
+
+
+def episode_path(pf, ep):
+    """Navmesh path of a dataset episode (habitat coordinates), or None if it cannot be followed."""
+    import habitat_sim
+    start = pf.snap_point(np.asarray(ep["start"], dtype=np.float32))
+    if not np.isfinite(np.asarray(start)).all():
+        return None
+    if "goals" in ep:
+        path = habitat_sim.MultiGoalShortestPath()
+        path.requested_start = start
+        path.requested_ends = [np.asarray(g, dtype=np.float32) for g in ep["goals"]]
+        if not pf.find_path(path) or len(path.points) < 2:
+            return None
+        pts = np.array(path.points, dtype=np.float64)
+    else:
+        legs, prev = [], start
+        for w in ep["waypoints"][1:]:
+            path = habitat_sim.ShortestPath()
+            path.requested_start, path.requested_end = prev, pf.snap_point(np.asarray(w, dtype=np.float32))
+            if not pf.find_path(path) or len(path.points) < 2:
+                return None
+            legs.append(np.array(path.points, dtype=np.float64)[(1 if legs else 0):])
+            prev = path.requested_end
+        if not legs:
+            return None
+        pts = np.concatenate(legs)
+    if np.linalg.norm(np.diff(pts, axis=0), axis=1).sum() < 1.0:
+        return None
+    return clear_path(pf, pts)
+
+
+def pad_standing(pos, yaw):
+    """An episode starts from rest and ends with a stop: stand for the past / future window."""
+    n0, n1 = scenario.N_PAST, scenario.N_FUTURE
+    return (np.concatenate([np.repeat(pos[:1], n0, 0), pos, np.repeat(pos[-1:], n1, 0)]),
+            np.concatenate([np.repeat(yaw[:1], n0), yaw, np.repeat(yaw[-1:], n1)]))
+
+
 def resample_path(points, step):
     """Polyline -> positions every `step` metres plus the heading of travel (habitat coords)."""
     seg = np.linalg.norm(np.diff(points, axis=0), axis=1)
@@ -247,7 +323,7 @@ def resample_path(points, step):
     return pos, yaw
 
 
-def episode_segment(sim, pos, yaw, images_dir, name, rng, dataset="habitat"):
+def episode_segment(sim, pos, yaw, images_dir, name, rng, dataset="habitat", task="pointgoal", instruction=""):
     """Follow a path step by step; return a segment dict plus packed points and grids per step."""
     import habitat_sim
     from habitat_sim.utils.common import quat_from_angle_axis
@@ -262,7 +338,8 @@ def episode_segment(sim, pos, yaw, images_dir, name, rng, dataset="habitat"):
         st.position = pos[i]
         st.rotation = quat_from_angle_axis(float(yaw[i]), np.array([0, 1.0, 0]))
         agent.set_state(st)
-        obs = sim.get_sensor_observations()
+        if i == 0 or not (np.array_equal(pos[i], pos[i - 1]) and yaw[i] == yaw[i - 1]):
+            obs = sim.get_sensor_observations()  # a standing agent sees the same thing again
         # ego pose in the z-up world: position on the floor, yaw about z.  A habitat yaw of t about +y
         # points the agent along (-sin t, 0, -cos t), i.e. along (-sin t, cos t) in the (x, -z) world,
         # whose heading angle is t + pi/2.
@@ -290,12 +367,14 @@ def episode_segment(sim, pos, yaw, images_dir, name, rng, dataset="habitat"):
     seg = dict(dataset=dataset, sequence=name, segment=0, rate_hz=RATE_HZ, frames=np.arange(F), timestamps=ts,
                ego_T=ego_T, labelled=np.ones(F, bool), ego_size=EGO_SIZE, lidar_height=0.0, tracks={}, camera=camera,
                point_keys=[(name, i) for i in range(F)], bev_keys=[(name, i) for i in range(F)],
-               image_paths=[str(Path(images_dir) / name / f"{i:04d}.jpg") for i in range(F)])
+               image_paths=[str(Path(images_dir) / name / f"{i:04d}.jpg") for i in range(F)],
+               task=task, instruction=instruction)
     return seg, store, grids
 
 
 def work(args):
-    scene, n_episodes, seed, images_dir, out, gpu, job, dataset_config, dataset = args
+    scene, n_episodes, seed, images_dir, out, gpu, job, dataset_config, dataset = args[:9]
+    spec = args[9] if len(args) > 9 else None   # episode-driven: dict(task, files, scene_id)
     done = Path(out) / f"job{job:05d}.done"
     if done.exists():
         return job, int(done.read_text())
@@ -307,22 +386,32 @@ def work(args):
         pf = sim.pathfinder
         if not pf.is_loaded:
             return job, 0
-        regions = load_regions(dataset_config, scene)
-        # With room polygons, episodes are drawn between indoor points on any island (upper floors
-        # and the outdoors are separate islands); without them, the enclosed island is guessed.
-        island = None if regions else choose_island(sim)
-        stats["area"] = pf.island_area(island) if island is not None else float(pf.navigable_area)
-        for e in range(n_episodes):
-            path = sample_episode(pf, rng, island, regions)
+        task, episodes = "pointgoal", [None] * n_episodes
+        if spec:
+            task = spec["task"]
+            episodes = load_episodes(spec["files"], task, spec["scene_id"]).get(spec["scene_id"], [])
+            episodes = [episodes[i] for i in rng.permutation(len(episodes))[:n_episodes]]
+            stats["area"] = float(pf.navigable_area)
+        else:
+            regions = load_regions(dataset_config, scene)
+            # With room polygons, episodes are drawn between indoor points on any island (upper floors
+            # and the outdoors are separate islands); without them, the enclosed island is guessed.
+            island = None if regions else choose_island(sim)
+            stats["area"] = pf.island_area(island) if island is not None else float(pf.navigable_area)
+        for e, ep in enumerate(episodes):
+            path = episode_path(pf, ep) if ep else sample_episode(pf, rng, island, regions)
             if path is None:
                 stats["no_path"] += 1
                 continue
             pos, yaw = resample_path(path, SPEED / RATE_HZ)
+            if ep:
+                pos, yaw = pad_standing(pos, yaw)
             if len(pos) < scenario.N_STEPS + 2:
                 stats["short"] += 1
                 continue
-            name = f"{Path(scene).stem.split('.')[0]}_{seed}_{e:03d}"
-            seg, store, grids = episode_segment(sim, pos, yaw, images_dir, name, rng, dataset)
+            name = f"{Path(scene).stem.split('.')[0]}_{ep['id'] if ep else seed}_{e:03d}"
+            seg, store, grids = episode_segment(sim, pos, yaw, images_dir, name, rng, dataset, task,
+                                                ep["instruction"] if ep else "")
             scenario.clean_segment(seg, lambda c: scenario.STATIC)
             new = segment_rows(seg, grids, 1, STRIDE, MAP_CONTEXT_FRAMES, MIN_STATIC_SPAN, 5, points=store,
                                camera=camera_inputs)
@@ -352,6 +441,11 @@ def main():
     ap.add_argument("--dataset-config", help="a habitat *.scene_dataset_config.json (HSSD, HM3D); all its scenes are used")
     ap.add_argument("--splits", help="yaml with scene ids under train / val: val scenes become validation + test")
     ap.add_argument("--config", default="habitat_2hz", help="name of the dataset config (output sub-directory)")
+    ap.add_argument("--episodes", nargs="*", help="habitat-lab episode files (VLN-CE or ObjectNav *.json.gz) to follow "
+                                                  "instead of sampling point-goal episodes")
+    ap.add_argument("--task", choices=["vln", "objectnav"], help="format of --episodes")
+    ap.add_argument("--scene-root", help="directory that the episodes' scene_id paths are relative to")
+    ap.add_argument("--split", default="train", help="split that --episodes belong to")
     ap.add_argument("--out", help="output directory (required unless --job)")
     ap.add_argument("--images-dir", default="/dev/shm/hnod/habitat_frames")
     ap.add_argument("--episodes-per-scene", type=int, default=40)
@@ -378,7 +472,17 @@ def main():
         os.environ.update(LD_PRELOAD=str(shim), LIBGL_ALWAYS_SOFTWARE="1",
                           __EGL_VENDOR_LIBRARY_FILENAMES="/usr/share/glvnd/egl_vendor.d/50_mesa.json")
         args.gpus = 1
-    if args.dataset_config:
+    by_scene = None
+    if args.episodes:
+        if not (args.task and args.scene_root):
+            ap.error("--episodes needs --task and --scene-root")
+        by_scene = {}
+        for f in args.episodes:   # which files mention which scene; the jobs read the episodes themselves
+            for sid in load_episodes([f], args.task):
+                by_scene.setdefault(sid, []).append(str(f))
+        scenes = sorted(sid for sid in by_scene if (Path(args.scene_root) / sid).exists())
+        print(f"{len(by_scene)} scenes in the episode files, {len(scenes)} found under {args.scene_root}", flush=True)
+    elif args.dataset_config:
         cfg = json.load(open(args.dataset_config))
         root = Path(args.dataset_config).parent
         scenes = sorted(p.name.split(".")[0] for d in cfg["scene_instances"]["paths"][".json"]
@@ -390,7 +494,9 @@ def main():
         scenes = scenes[:args.max_scenes]
     rng = np.random.default_rng(args.seed)
     split_of = {}
-    if args.splits:
+    if by_scene is not None:
+        split_of = {s: args.split for s in scenes}
+    elif args.splits:
         import yaml
         held = set(yaml.safe_load(open(args.splits)).get("val", []))
         held = [s for s in scenes if Path(s).name.split(".")[0] in held]
@@ -412,8 +518,11 @@ def main():
     for j, scene in enumerate(scenes):
         parts = out / "_parts" / split_of[scene]
         parts.mkdir(parents=True, exist_ok=True)
-        jobs.append((str(scene), args.episodes_per_scene, args.seed * 100000 + j, args.images_dir, str(parts), -1 if args.cpu else j % args.gpus, j,
-                     args.dataset_config, args.config.split("_")[0]))
+        job = (str(scene), args.episodes_per_scene, args.seed * 100000 + j, args.images_dir, str(parts),
+               -1 if args.cpu else j % args.gpus, j, args.dataset_config, args.config.split("_")[0])
+        if by_scene is not None:
+            job = (str(Path(args.scene_root) / scene),) + job[1:] + (dict(task=args.task, files=by_scene[scene], scene_id=scene),)
+        jobs.append(job)
     # One subprocess per scene: habitat-sim occasionally dies in native code, and a forked
     # process cannot bring up its own EGL context; a crash then costs one scene, not the run.
     logs = out / "_logs"

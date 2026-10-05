@@ -31,6 +31,10 @@ FEATURES = Features({
     "ego": {"x": seq_f32, "y": seq_f32, "z": seq_f32, "heading": seq_f32, "vx": seq_f32, "vy": seq_f32,
             "length": f32, "width": f32, "height": f32},
     "goal": seq_f32,
+    # what the robot is asked to do: "pointgoal" (reach `goal`), "vln" (follow `instruction`),
+    # "objectnav" (find the object named in `instruction`); `goal` is always the end of the recorded future
+    "task": Value("string"),
+    "instruction": Value("string"),
     # --- ground truth: the current step and the N_FUTURE future ones
     "future_tracks": _track_fields,
     "tracks_to_predict": List(Value("int32")),
@@ -73,6 +77,7 @@ def to_row(sc, static_map, map_resolution, images=None, camera=None, lidar=None)
         "camera": camera,
         "ego": {k: (listed(v) if np.ndim(v) else float(v)) for k, v in ego.items()},
         "goal": listed(sc["goal"]),
+        "task": sc.get("task", "pointgoal"), "instruction": sc.get("instruction", ""),
         "future_tracks": future,
         "tracks_to_predict": listed(sc["tracks_to_predict"]),
         "future_lidar": None if lidar is None else {k: [a.tolist() for a in v] for k, v in lidar.items()},

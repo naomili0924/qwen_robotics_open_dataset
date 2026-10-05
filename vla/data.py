@@ -9,7 +9,8 @@ from torch.utils.data import Dataset
 
 from hnod.scenario import CURRENT
 
-INPUT_COLUMNS = ["scenario_id", "rate_hz", "past_images", "ego", "goal"]
+INPUT_COLUMNS = ["scenario_id", "rate_hz", "past_images", "ego", "goal", "task", "instruction"]
+OPTIONAL_COLUMNS = {"task", "instruction"}
 
 SYSTEM_PROMPT = ("You are the navigation policy of a mobile robot. The images are the robot's front camera, "
                  "oldest first; the last one is the current moment. Coordinates are in metres in the robot's "
@@ -23,9 +24,14 @@ def load_split(cfg, split, columns=None):
         ds = load_dataset("parquet", data_files=files, split="train", cache_dir=cfg.cache_dir)
     else:
         ds = load_dataset(cfg.data, cfg.config_name, split=split, cache_dir=cfg.cache_dir)
-    if columns:
-        ds = ds.select_columns(columns)
+    if columns:  # datasets published before the task / instruction columns existed do not have them
+        ds = ds.select_columns([c for c in columns if c in ds.column_names or c not in OPTIONAL_COLUMNS])
     return ds
+
+
+def language_task(row):
+    """True if the row's goal is given in words (VLN, object-goal) rather than as a point."""
+    return bool(row.get("instruction")) and row.get("task", "pointgoal") != "pointgoal"
 
 
 def prompt_for(row, cfg):
@@ -35,7 +41,10 @@ def prompt_for(row, cfg):
     if cfg.ego_history:
         past = ", ".join(f"({ego['x'][i]:.1f}, {ego['y'][i]:.1f})" for i in range(CURRENT + 1))
         parts.append(f"Robot positions over the last {CURRENT} frames, oldest first: {past}.")
-    parts.append(f"Goal: ({row['goal'][0]:.1f}, {row['goal'][1]:.1f}).")
+    if language_task(row):
+        parts.append(f"Instruction: {row['instruction'].strip()}")
+    else:
+        parts.append(f"Goal: ({row['goal'][0]:.1f}, {row['goal'][1]:.1f}).")
     parts.append(f"Predict the robot's position at each of the next {cfg.horizon} frames.")
     return " ".join(parts)
 
@@ -44,7 +53,8 @@ def kinematic_vector(row):
     """Past positions, current velocity and goal as numbers for the heads (26 values)."""
     ego = row["ego"]
     past = np.stack([ego["x"], ego["y"]], 1)[:CURRENT + 1].ravel()
-    return np.r_[past, ego["vx"][CURRENT], ego["vy"][CURRENT], row["goal"]].astype(np.float32)
+    goal = (0.0, 0.0) if language_task(row) else row["goal"]  # the end point would leak a language task's answer
+    return np.r_[past, ego["vx"][CURRENT], ego["vy"][CURRENT], goal].astype(np.float32)
 
 
 KIN_DIM = 2 * (CURRENT + 1) + 4
