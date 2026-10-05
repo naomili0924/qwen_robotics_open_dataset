@@ -1,6 +1,7 @@
 """Run a trained policy on the evaluation suite and score it (hnod.suite).
 
-    python -m vla.predict_suite --checkpoint runs/x/last --out runs/x/suite_v1.json
+    python -m vla.predict_suite --checkpoint runs/x/last --out runs/x/suite_v2.json
+    python -m vla.predict_suite --hub-repo <user>/<repo> --checkpoint <run>/best --version v2 --out best_v2.json
 
 Works for policies trained on scenario rows (data_format=scenarios) and on per-frame data
 (data_format=frames): the suite row is turned into the same inputs the policy saw in training.
@@ -54,7 +55,10 @@ class SuiteDataset(Dataset):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--checkpoint", required=True)
+    ap.add_argument("--checkpoint", required=True, help="local checkpoint folder, or with --hub-repo a folder "
+                                                        "of that repo such as e1_all_sqrt/best")
+    ap.add_argument("--hub-repo", default="", help="Hugging Face model repo to load the checkpoint from")
+    ap.add_argument("--revision", default=None, help="commit of --hub-repo (older versions of a folder)")
     ap.add_argument("--repo", default="Jinyan0924/qwen_robotics_nav_eval")
     ap.add_argument("--version", default="v1")
     ap.add_argument("--data", help="local directory of suite parquet files instead of the Hub")
@@ -69,7 +73,9 @@ def main():
                             split="train")
     else:
         rows = load_dataset(args.repo, args.version, split="test")
-    pipe = NavigationPipeline.from_pretrained(args.checkpoint, batch_size=args.batch_size, workers=4, stream=False)
+    opts = dict(batch_size=args.batch_size, workers=4, stream=False)
+    pipe = (NavigationPipeline.from_hub(args.hub_repo, args.checkpoint, args.revision, **opts) if args.hub_repo
+            else NavigationPipeline.from_pretrained(args.checkpoint, **opts))
     cfg, model = pipe.cfg, pipe.model
     model.eval()
     loader = make_loader(SuiteDataset(rows, cfg), cfg, pipe.collate, shuffle=False)

@@ -34,6 +34,21 @@ python scripts/build_eval_suite.py candidates && python scripts/build_eval_suite
     python scripts/build_eval_suite.py write                       # rebuild (selection keeps audited scenarios)
 ```
 
+**Run a trained policy** (checkpoints are on a Hugging Face model repo: `<run>/last`, `<run>/step_<N>`, `<run>/best`):
+
+```bash
+# score a checkpoint on the suite
+python -m vla.predict_suite --hub-repo <user>/<repo> --checkpoint <run>/best --version v2 --out best_v2.json
+# your own images (oldest first, 1 s apart, last = now) and a goal in the robot frame -> path
+python -m vla.infer --hub-repo <user>/<repo> --checkpoint <run>/best --images a.jpg b.jpg c.jpg --goal 4.0 -1.0 --plot path.png
+```
+
+```python
+from vla.pipeline import NavigationPipeline
+pipe = NavigationPipeline.from_hub("<user>/<repo>", "<run>/best")
+path = pipe.predict_path(images, goal=(4.0, -1.0))     # (8, 2) waypoints in metres, 0.25 m apart
+```
+
 **Training data** in a per-frame format (configs `frames` + `episodes`; [`hnod/frames.py`](hnod/frames.py)):
 raw images and metric poses per frame, with history, waypoints (by distance along the path, so no speed is baked
 in), goal and prompt cut at load time by [`hnod/windows.py`](hnod/windows.py).

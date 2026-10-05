@@ -46,6 +46,19 @@ class NavigationPipeline:
         cfg.init_from, cfg.resume = str(directory), ""
         return cls(cfg, device, **overrides)
 
+    @classmethod
+    def from_hub(cls, repo, checkpoint, revision=None, cache="/dev/shm/nav_policy_checkpoints", device="cuda",
+                 **overrides):
+        """Load a checkpoint folder of a Hugging Face model repo, e.g. ("user/nav_policy", "e1_all_sqrt/best").
+
+        revision: a commit of the repo (older versions of an overwritten folder such as <run>/last).
+        Needs HF_TOKEN for a private repo.
+        """
+        from huggingface_hub import snapshot_download
+        local = snapshot_download(repo, revision=revision, allow_patterns=[f"{checkpoint}/*"],
+                                  local_dir=Path(cache) / repo.replace("/", "__") / (revision or "main"))
+        return cls.from_pretrained(Path(local) / checkpoint, device, **overrides)
+
     def save_pretrained(self, directory):
         self.model.save(directory)
 
@@ -129,6 +142,48 @@ class NavigationPipeline:
                "vy": [0.0] * CURRENT + [float(v[1])] + [0.0] * n_future}
         row = {"past_images": list(images), "ego": ego, "goal": list(map(float, goal)), "rate_hz": float(rate_hz)}
         return self.predict_rows([row])[0]
+
+    @torch.no_grad()
+    def predict_path(self, images, goal=None, instruction=None, past_xy=None, velocity=None):
+        """Path for one moment, for policies trained on per-frame data (data_format="frames").
+
+        images: PIL images, oldest first, cfg.past_dt_s seconds apart; the last is the current view (fewer
+            than cfg.frames is fine: the oldest is repeated).
+        goal: (x, y) in metres in the robot frame (robot at (0, 0), x forward, y left), and / or
+        instruction: text such as "Walk to the glass door on the left."  At least one of the two.
+        past_xy: the robot's past positions in the current robot frame, oldest first, cfg.past_dt_s apart,
+            ending with (0, 0); optional (a robot that just started: all zeros).
+        velocity: (vx, vy) m/s in the robot frame; optional (derived from past_xy).
+        Returns (cfg.horizon, 2) waypoints in metres, cfg.spacing_m apart along the path.
+        """
+        from vla.data import frames_prompt
+        from hnod.windows import POINT_TEMPLATES
+        cfg = self.cfg
+        assert cfg.data_format == "frames", "predict_path is for per-frame policies; use predict() otherwise"
+        assert goal is not None or instruction, "give a goal, an instruction, or both"
+        n = CURRENT + 1
+        past = np.zeros((n, 2), np.float32) if past_xy is None else np.asarray(past_xy, np.float32).reshape(-1, 2)[-n:]
+        if len(past) < n:  # clamp to the earliest known position, as at the start of a training episode
+            past = np.concatenate([np.repeat(past[:1], n - len(past), 0), past])
+        if velocity is None:
+            velocity = (past[-1] - past[-2]) / cfg.past_dt_s
+        velocity = np.asarray(velocity, np.float32)
+        imgs = [im.convert("RGB") for im in images][-cfg.frames:]
+        imgs = [imgs[0]] * (cfg.frames - len(imgs)) + imgs
+        if instruction and goal is not None:
+            prompt = f"{instruction.strip().rstrip('.')}. It is at ({goal[0]:.1f}, {goal[1]:.1f})."
+        elif instruction:
+            prompt = instruction.strip()
+        else:
+            prompt = POINT_TEMPLATES[0].format(x=goal[0], y=goal[1])
+        s = dict(past_xy=past, velocity=velocity, prompt=prompt)
+        g = np.zeros(2, np.float32) if goal is None else np.asarray(goal, np.float32)
+        item = dict(index=0, scenario_id="0", images=imgs, prompt=frames_prompt(s, cfg),
+                    kin=np.r_[past.ravel(), velocity, g].astype(np.float32),
+                    target=np.zeros((cfg.horizon, cfg.action_dim), np.float32), aux={})
+        self.model.eval()
+        batch = to_device(self.collate([item]), self.model.device)
+        return self.model.predict(batch)["trajectory"][0, :, :2].float().cpu().numpy()
 
     def __repr__(self):
         return f"NavigationPipeline({self.model.describe()})"
