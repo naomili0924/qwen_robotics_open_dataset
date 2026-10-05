@@ -11,6 +11,40 @@ from .tasks import aux_tasks
 INPUT_KEYS = ("input_ids", "attention_mask", "pixel_values", "image_grid_thw")
 
 
+def _pad_linear(layer, n, dim):
+    """The same linear layer with its output (dim 0) or input (dim 1) size zero-padded to n."""
+    shape = list(layer.weight.shape)
+    shape[dim] = n
+    new = nn.Linear(shape[1], shape[0], bias=layer.bias is not None, device=layer.weight.device,
+                    dtype=layer.weight.dtype)
+    with torch.no_grad():
+        new.weight.zero_()
+        new.weight[:layer.weight.shape[0], :layer.weight.shape[1]] = layer.weight
+        if layer.bias is not None:
+            new.bias.zero_()
+            new.bias[:layer.bias.shape[0]] = layer.bias
+    new.weight.requires_grad_(layer.weight.requires_grad)
+    if layer.bias is not None:
+        new.bias.requires_grad_(layer.bias.requires_grad)
+    return new
+
+
+def pad_vision_mlp(visual, multiple=64):
+    """Zero-pad the vision MLPs' hidden width (3420 in Qwen2.5-VL) to a multiple of 64.
+
+    3420 is not a multiple of 8, which sends cuBLAS to slow fallback kernels; the vision tower runs about
+    1.6x faster padded.  Mathematically identical: padded gate/up rows are zero (silu(0) * 0 = 0) and the
+    padded down-projection columns are zero.
+    """
+    for blk in visual.blocks:
+        m = blk.mlp
+        n = -(-m.gate_proj.out_features // multiple) * multiple
+        if n == m.gate_proj.out_features:
+            continue
+        m.gate_proj, m.up_proj = _pad_linear(m.gate_proj, n, 0), _pad_linear(m.up_proj, n, 0)
+        m.down_proj = _pad_linear(m.down_proj, n, 1)
+
+
 class NavPolicy(nn.Module):
     def __init__(self, cfg, device="cuda"):
         super().__init__()
@@ -18,7 +52,8 @@ class NavPolicy(nn.Module):
         self.device = device
         self.processor = AutoProcessor.from_pretrained(cfg.backbone)
         full = AutoModelForImageTextToText.from_pretrained(
-            cfg.backbone, dtype=torch.float32 if cfg.backbone_mode == "full" else torch.bfloat16, device_map=device)
+            cfg.backbone, dtype=torch.float32 if cfg.backbone_mode == "full" else torch.bfloat16, device_map=device,
+            **({"attn_implementation": cfg.attn_implementation} if cfg.attn_implementation else {}))
         self.backbone = full.model  # vision encoder + language model, without the vocabulary head
         del full.lm_head
         hidden = self.backbone.config.text_config.hidden_size
@@ -45,6 +80,8 @@ class NavPolicy(nn.Module):
             # (its outputs feed trainable layers); run it under no_grad instead.
             visual = self.inner.visual
             visual.forward = torch.no_grad()(visual.forward)
+        if cfg.pad_vision_mlp:
+            pad_vision_mlp(self.inner.visual)
         self.hidden = hidden
         self.head = build_head(hidden, cfg).to(device)
         self.aux = nn.ModuleDict({t.name: AuxHead(hidden, cfg, t).to(device) for t in aux_tasks(cfg.tasks)})

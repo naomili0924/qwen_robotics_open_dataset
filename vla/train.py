@@ -6,20 +6,22 @@ The same loop is used by NavigationPipeline.fit().
 import json
 import math
 import random
+import shutil
 import sys
 import time
 from pathlib import Path
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Subset, WeightedRandomSampler
+from torch.utils.data import DataLoader, IterableDataset, Subset, WeightedRandomSampler
 from torch.utils.tensorboard import SummaryWriter
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from hnod import eval as ev  # noqa: E402
 from vla.config import Config, parse_args  # noqa: E402
 from vla.data import (Collator, FrameNavDataset, NavDataset, columns_for, fit_action_scale,  # noqa: E402
-                      fit_action_scale_frames, load_frames, load_split, to_device)
+                      fit_action_scale_frames, fit_action_scale_stream, load_frames, load_split, stream_frames,
+                      to_device)
 from vla import hub  # noqa: E402
 from vla.model import NavPolicy  # noqa: E402
 from vla.tasks import aux_tasks  # noqa: E402
@@ -32,6 +34,9 @@ def seed_all(seed):
 
 
 def make_loader(ds, cfg, collate, shuffle, limit=0, weights=None):
+    if isinstance(ds, IterableDataset):  # streams shuffle and mix themselves
+        return DataLoader(ds, batch_size=cfg.batch_size, collate_fn=collate, num_workers=cfg.workers,
+                          drop_last=shuffle, persistent_workers=False, prefetch_factor=4 if cfg.workers else None)
     if limit:
         ds = Subset(ds, list(range(min(limit, len(ds)))))
         weights = None if weights is None else weights[:len(ds)]
@@ -97,7 +102,15 @@ def train(cfg: Config, model=None, train_ds=None, val_rows=None):
     run.mkdir(parents=True, exist_ok=True)
     tasks = aux_tasks(cfg.tasks)
     weights = None
-    if cfg.data_format == "frames":
+    if cfg.data_format == "frames" and cfg.stream:
+        assert not tasks, "auxiliary tasks need scenario rows; per-frame data trains the trajectory only"
+        train_set = stream_frames(cfg, cfg.train_split)
+        val_set = stream_frames(cfg, cfg.val_split, finite=True, max_items=max(1, cfg.val_items // max(1, cfg.workers)))
+        val_rows = None
+        print("train stream:", train_set.describe(), "| val:", val_set.describe(), flush=True)
+        if cfg.action_scale <= 0:
+            cfg.action_scale = fit_action_scale_stream(train_set, cfg)
+    elif cfg.data_format == "frames":
         assert not tasks, "auxiliary tasks need scenario rows; per-frame data trains the trajectory only"
         train_set = train_ds or FrameNavDataset(load_frames(cfg, cfg.train_split), cfg)
         val_set = FrameNavDataset(load_frames(cfg, cfg.val_split), cfg)
@@ -116,7 +129,9 @@ def train(cfg: Config, model=None, train_ds=None, val_rows=None):
             cfg.action_scale = fit_action_scale(train_ds, cfg)
         train_set, val_set = NavDataset(train_ds, cfg, tasks), NavDataset(val_ds, cfg, tasks)
     cfg.save(run / "config.json")
-    print(f"train {len(train_set)} val {len(val_set)} samples, action scale {cfg.action_scale:.2f} m", flush=True)
+    if hasattr(train_set, "__len__"):
+        print(f"train {len(train_set)} val {len(val_set)} samples", flush=True)
+    print(f"action scale {cfg.action_scale:.2f} m", flush=True)
 
     if model is None:
         model = NavPolicy(cfg)
@@ -158,6 +173,9 @@ def train(cfg: Config, model=None, train_ds=None, val_rows=None):
         model.save(d)
         torch.save({"opt": opt.state_dict(), "sched": sched.state_dict(), "step": step}, d / "trainer.pt")
         hub.save_last(run, name, cfg.hub_repo)
+        steps = sorted(run.glob("step_*"), key=lambda p: int(p.name.split("_")[1]))
+        for old in steps[:-cfg.keep_local]:  # the Hub keeps every version of <run>/last in its history
+            shutil.rmtree(old, ignore_errors=True)
 
     model.train()
     t0, window = time.time(), []
