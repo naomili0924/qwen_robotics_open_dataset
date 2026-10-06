@@ -168,9 +168,12 @@ def frame_item(windows, k, cfg, index=0):
     """One training item (NavDataset layout) for sample k of a hnod.windows.FrameWindows."""
     s = windows[k]
     if "final_image" in s:
-        return final_frame_item(s["images"], s["final_image"], s["prompt"], cfg,
+        item = final_frame_item(s["images"], s["final_image"], s["prompt"], cfg,
                                 target=s["target"][:, :cfg.action_dim] / cfg.action_scale, index=index,
                                 scenario_id=f"{s['episode_id']}:{s['frame_index']}")
+        if cfg.text_loss:  # the sample's description (hindsight text) is a training target, never an input
+            item["description"] = getattr(windows, "descriptions", {}).get((s["episode_id"], s["frame_index"]), "")
+        return item
     goal = s["goal"] if s["goal_given"] else np.zeros(2, np.float32)
     kin = np.r_[s["past_xy"].ravel(), s["velocity"], goal].astype(np.float32)
     return dict(index=index, scenario_id=f"{s['episode_id']}:{s['frame_index']}",
@@ -290,11 +293,40 @@ class Collator:
             texts.append(self.render(messages))
             images += it["images"]
         batch = dict(self.processor(text=texts, images=images, padding=True, return_tensors="pt"))
+        if self.cfg.text_loss and any(it.get("description") for it in items):
+            batch = self.append_text(batch, [it.get("description", "") for it in items])
         batch["target"] = torch.from_numpy(np.stack([it["target"] for it in items]))
         batch["kin"] = torch.from_numpy(np.stack([it["kin"] for it in items]))
         batch["aux"] = {k: torch.from_numpy(np.stack([it["aux"][k] for it in items])) for k in items[0]["aux"]}
         batch["index"] = torch.tensor([it["index"] for it in items])
         batch["scenario_id"] = [it["scenario_id"] for it in items]
+        return batch
+
+
+    def append_text(self, batch, texts):
+        """Write each description after the prompt (assistant turn) with labels on its tokens only; the heads keep
+        reading the last prompt token (`summary_pos`), which never sees the text under causal attention."""
+        tok = self.processor.tokenizer
+        end = tok.convert_tokens_to_ids("<|im_end|>")
+        lens = batch["attention_mask"].sum(1).tolist()
+        extra = [(tok(t, add_special_tokens=False)["input_ids"] + [end]) if t else [] for t in texts]
+        L = max(n + len(e) for n, e in zip(lens, extra))
+        B = len(lens)
+        ids = torch.full((B, L), tok.pad_token_id, dtype=batch["input_ids"].dtype)
+        mask = torch.zeros((B, L), dtype=batch["attention_mask"].dtype)
+        labels = torch.full((B, L), -100, dtype=torch.long)
+        types = torch.zeros((B, L), dtype=batch["mm_token_type_ids"].dtype) if "mm_token_type_ids" in batch else None
+        for i, (n, e) in enumerate(zip(lens, extra)):
+            ids[i, :n] = batch["input_ids"][i, :n]
+            mask[i, :n + len(e)] = 1
+            if types is not None:
+                types[i, :n] = batch["mm_token_type_ids"][i, :n]
+            if e:
+                ids[i, n:n + len(e)] = torch.tensor(e)
+                labels[i, n:n + len(e)] = torch.tensor(e)
+        batch.update(input_ids=ids, attention_mask=mask, labels=labels, summary_pos=torch.tensor(lens) - 1)
+        if types is not None:
+            batch["mm_token_type_ids"] = types
         return batch
 
 

@@ -58,16 +58,20 @@ class NavPolicy(nn.Module):
             cfg.backbone, dtype=torch.float32 if cfg.backbone_mode == "full" else torch.bfloat16, device_map=device,
             **({"attn_implementation": cfg.attn_implementation} if cfg.attn_implementation else {}))
         self.backbone = full.model  # vision encoder + language model, without the vocabulary head
-        del full.lm_head
+        if cfg.text_loss:  # the description target needs the vocabulary head (frozen; tied to the embeddings on small Qwens)
+            self.lm_head = full.lm_head.requires_grad_(False)
+        else:
+            del full.lm_head
         hidden = self.backbone.config.text_config.hidden_size
         if cfg.backbone_mode == "frozen":
             self.backbone.requires_grad_(False)
         elif cfg.backbone_mode == "lora":
             from peft import LoraConfig, get_peft_model
-            targets = r".*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)$"
+            # attention, Qwen3.5's linear-attention projections, and the MLPs of the language model
+            lm = r"language_model.*\.(q_proj|k_proj|v_proj|o_proj|in_proj_qkv|in_proj_z|out_proj|gate_proj|up_proj|down_proj)"
+            targets = rf".*{lm}$"
             if cfg.tune_vision:
-                targets = (r".*(language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)"
-                           r"|visual\.blocks.*\.(qkv|proj|gate_proj|up_proj|down_proj))$")
+                targets = rf".*({lm}|visual\.blocks.*\.(qkv|proj|gate_proj|up_proj|down_proj))$"
             self.backbone = get_peft_model(self.backbone, LoraConfig(
                 r=cfg.lora_rank, lora_alpha=cfg.lora_alpha, lora_dropout=cfg.lora_dropout, target_modules=targets))
         elif cfg.backbone_mode == "full":
@@ -120,15 +124,30 @@ class NavPolicy(nn.Module):
         with ctx, torch.autocast("cuda", dtype=torch.bfloat16):
             hs = self.backbone(**inputs).last_hidden_state
         mask = batch["attention_mask"].bool()
-        last = mask.sum(1) - 1
-        return dict(summary=hs[torch.arange(len(hs)), last].float(), memory=hs.float(), mask=mask,
+        last = batch["summary_pos"] if "summary_pos" in batch else mask.sum(1) - 1
+        cond = dict(summary=hs[torch.arange(len(hs)), last].float(), memory=hs.float(), mask=mask,
                     kin=batch["kin"].float())
+        if "labels" in batch and self.cfg.text_loss:
+            cond["text"] = self.text_loss(hs, batch["labels"])
+        return cond
+
+    def text_loss(self, hs, labels):
+        """Cross-entropy of the description tokens (labels != -100), predicted from the previous position."""
+        tgt = labels[:, 1:]
+        keep = tgt != -100
+        if not keep.any():
+            return hs.sum() * 0.0
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            logits = self.lm_head(hs[:, :-1][keep])
+        return nn.functional.cross_entropy(logits.float(), tgt[keep])
 
     def losses(self, batch):
         cond = self.encode(batch)
         out = {}
         if "trajectory" in self.cfg.tasks:
             out["trajectory"] = self.head.loss(cond, batch["target"].float())
+        if "text" in cond:
+            out["text"] = self.cfg.text_loss * cond["text"]
         for name, head in self.aux.items():
             out[name] = head.task.weight * head.loss(cond, batch["aux"][name].float())
         return out

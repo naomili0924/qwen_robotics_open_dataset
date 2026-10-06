@@ -29,8 +29,10 @@ class _Source:
         self.frames = sorted(f for f in files if f.startswith(f"data/frames/{split}-"))
         self.episode_files = sorted(f for f in files if f.startswith(f"data/episodes/{split}-"))
         self.sample_files = sorted(f for f in files if f.startswith(f"data/samples/{split}-"))  # a published sample list
+        self.annotation_files = sorted(f for f in files if f.startswith(f"data/annotations/{split}-"))
         self.sizes = None  # frame counts, filled by load_episodes
         self.allowed = None
+        self.descriptions = {}  # (episode_id, frame_index) -> text, from data/annotations (scripts/annotate_samples.py)
 
     def load_episodes(self):
         """All episode rows of the split (small), as a list of dicts."""
@@ -51,6 +53,12 @@ class _Source:
                     allowed |= set(zip(t.column("episode_id").to_pylist(), t.column("frame_index").to_pylist()))
             self.allowed = allowed
             self.sizes = len(allowed)
+        if self.annotation_files:
+            with tempfile.TemporaryDirectory(dir=_tmp_root()) as d:
+                for f in self.annotation_files:
+                    t = pq.read_table(hf_hub_download(self.repo, f, repo_type="dataset", local_dir=d),
+                                      columns=["episode_id", "frame_index", "description"]).to_pydict()
+                    self.descriptions.update({(e, i): s for e, i, s in zip(t["episode_id"], t["frame_index"], t["description"]) if s})
         return rows
 
 
@@ -101,7 +109,9 @@ class StreamFrames(IterableDataset):
 
     def _windows(self, src, path):
         ds = read_shard(src.repo, path)
-        return FrameWindows(ds, self.episodes[src.repo], self.window_cfg, allowed=src.allowed)
+        win = FrameWindows(ds, self.episodes[src.repo], self.window_cfg, allowed=src.allowed)
+        win.descriptions = src.descriptions
+        return win
 
     def __iter__(self):
         info = get_worker_info()

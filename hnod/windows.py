@@ -214,9 +214,11 @@ class FrameWindows:
     def _final_frame_sample(self, i, e, a, b, ep):
         """Past frames + the frame horizon_s ahead -> the recorded positions in between, by time."""
         c, p0, t0 = self.cfg, self.pose[i], self.t[i]
-        want = t0 - c.past_dt_s * np.arange(c.n_past, -1, -1)
-        rows = np.clip(a + np.searchsorted(self.t[a:b], want + 1e-6, side="right") - 1, a, i)
         tt = self.t[a:b]
+        want = t0 - c.past_dt_s * np.arange(c.n_past, -1, -1)
+        # the frame nearest each past time (the same rule as scripts/publish_dedup.py, which stores images only for
+        # these frames), never after the current one
+        rows = np.minimum(a + np.abs(tt[:, None] - want[None]).argmin(0), i)
         times = t0 + c.horizon_s * np.arange(1, c.n_waypoints + 1) / c.n_waypoints
         xy = np.stack([np.interp(times, tt, self.pose[a:b, 0]), np.interp(times, tt, self.pose[a:b, 1])], -1)
         yaw = np.interp(times, tt, np.unwrap(self.pose[a:b, 3]))
@@ -233,6 +235,9 @@ class FrameWindows:
         """PIL images for frame rows (repeats allowed)."""
         uniq, inv = np.unique(rows, return_inverse=True)
         got = self.frames.select(uniq.tolist()).select_columns([column])[column]
+        if any(g is None for g in got):
+            raise ValueError(f"no image stored for rows {uniq[[g is None for g in got]].tolist()} (a reduced repo "
+                             "stores images only for the frames its listed samples need)")
         return [got[j] for j in inv]
 
     def __getitem__(self, k):

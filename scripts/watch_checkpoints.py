@@ -50,8 +50,8 @@ def val_losses(run):
             d = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if "val_loss" in d:
-            out[int(d["step"])] = float(d["val_loss"])
+        if "val_loss" in d:  # the trajectory loss alone when there are other losses (e.g. the description text)
+            out[int(d["step"])] = float(d.get("val_loss_trajectory", d["val_loss"]))
     return out
 
 
