@@ -137,3 +137,18 @@ python scripts/watch_checkpoints.py --run /dev/shm/runs/ff4_lora4b_instruction -
 ```
 
 To start a later run from its weights: `--init-from hub:Jinyan0924/qwen_robotics_nav_policy/ff4_lora4b_instruction/step_3000`.
+
+
+## Ablation queued: `ff5_lora4b_instruction_camera` (owner, 2026-10-06)
+
+Identical to ff4 (past frames + annotation text, no final frame, 6,200 steps) plus `--camera-prompt`: the prompt also
+states the camera's field of view and, when its source is the dataset's calibration or a simulator, its height above
+the ground; otherwise "unknown" (MuSoHu in the eval). Starts automatically when ff4 finishes
+(`/workspace/logs/launch_ff5.sh` on this machine; on a new machine run the command below). The eval adds the
+"unknown camera" condition: if the model uses the calibration, its predictions change when the sentence says unknown.
+
+```bash
+bash scripts/run_ff.sh ff5_lora4b_instruction_camera 6200 4b-lora --no-final-image --instruction description,place,interaction \
+  --camera-prompt --text-loss 0 --frames-repos Jinyan0924/qwen_robotics_nav_pretrain_dedup \
+  --val-frames-repos Jinyan0924/qwen_robotics_nav_pretrain_dedup --val-split train --save-every 500 --eval-every 500
+```
