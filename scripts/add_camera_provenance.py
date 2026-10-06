@@ -58,6 +58,34 @@ def upload(api, kw):
             time.sleep(300 * 2 ** attempt)
 
 
+def export_calibration(cameras, work, out=Path(__file__).resolve().parents[1] / "docs" / "calibration"):
+    """docs/calibration/*.jsonl: the calibration and its provenance per episode and per eval scenario (kept in git)."""
+    import json
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / "episodes_camera.jsonl", "w") as f:
+        for repo_dir in sorted(work.glob("*/data/episodes")):
+            repo = "Jinyan0924/" + repo_dir.parts[-3]
+            for fp in sorted(repo_dir.glob("*.parquet")):
+                for r in pq.read_table(fp, columns=["episode_id", "dataset", "camera"]).to_pylist():
+                    c = r["camera"]
+                    hm = c.get("height_m")
+                    f.write(json.dumps(dict(repo=repo, dataset=r["dataset"], episode_id=r["episode_id"], name=c["name"], width=c["width"],
+                                            height=c["height"], K=[round(v, 4) for v in c["K"]], distortion_model=c["distortion_model"],
+                                            distortion=[round(v, 6) for v in (c["distortion"] or [])],
+                                            height_m=None if hm is None or not np.isfinite(hm) else round(float(hm), 3),
+                                            height_source=c.get("height_source", "unknown"), camera_prompt=camera_prompt(c))) + "\n")
+    with open(out / "eval_camera.jsonl", "w") as f:
+        for version, root in (("v3", "/dev/shm/final_frame_eval"), ("v2", "/dev/shm/final_frame_eval_v2")):
+            for fp in sorted(glob.glob(f"{root}/{version}_final_frame/test-*.parquet")):
+                for r in pq.read_table(fp, columns=["suite_id", "scenario_id", "source", "camera"]).to_pylist():
+                    cam = camera_calibration(r)
+                    f.write(json.dumps(dict(suite=f"{version}_final_frame", suite_id=r["suite_id"], scenario_id=r["scenario_id"], source=r["source"],
+                                            name=cam["name"], width=cam["width"], height=cam["height"], K=[round(x, 4) for x in cam["K"]],
+                                            height_m=None if cam["height_m"] is None else round(cam["height_m"], 3),
+                                            height_source=cam["height_source"], camera_prompt=camera_prompt(cam))) + "\n")
+    print(f"calibration exported to {out}", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--work", default="/dev/shm/camera_prov")
@@ -128,6 +156,7 @@ def main():
         if args.upload:
             upload(api, dict(repo_id="Jinyan0924/qwen_robotics_nav_eval", repo_type="dataset", folder_path=str(src_dir),
                              path_in_repo=f"data/{version}_final_frame", commit_message=f"{version}_final_frame: camera calibration columns"))
+    export_calibration(cameras, work)
     # the watcher's copy of v2 (built before future_images existed) gets the new table too
     live = Path("/dev/shm/final_frame_eval/v2_final_frame")
     if str(live) != "/dev/shm/final_frame_eval_v2/v2_final_frame":
