@@ -112,6 +112,11 @@ end to end on a sample first, then discuss scale (more GPUs may be rented).
   FDE 0.99 (constant velocity 0.62 / 0.70 / 0.20 / 0.49 / 1.12); swapping the final frame drops success to 0.10 and
   moves the end point 2.4 m; swapping the prompt 1.2 m. Milestones 1,000-5,000 with evals under
   `ff3_lora4b_dedup/` on the model repo. Training a 4B here is slowed by the missing `causal_conv1d` wheel (CUDA 13).
+- **Eval v3 (2026-10-06):** `v3_final_frame` = 132 motion-diverse real scenarios (`scripts/build_eval_v3.py`,
+  `docs/eval_audit_v3.json`); v2 was two thirds straight. Constant velocity on v3: success 0.33, ADE 0.84, FDE 1.92.
+  ff3 at step 3,500 on v3: success 0.41, completed 0.42, collided 0.24, ADE 0.75, FDE 1.32 - the first run that beats
+  constant velocity; swapped final frame moves the end point 2.6 m. Eval scenarios (v2, v3) carry Claude descriptions
+  (`v2_annotations`, `v3_annotations`) and `future_images` at 1 Hz. The watcher scores milestones on v2 and v3.
 - **Hardware notes:** this machine = 1x H100 NVL 94 GB, 128 CPUs, 377 GB RAM, 32 GB root disk (always short:
   base-model weights go to `HF_HUB_CACHE=/dev/shm/hf_hub`, runs to `/dev/shm/runs`). Throughput: 2B 4.2
   samples/s (5.2 without checkpointing at 90 GB), 4B 1.8 samples/s (needs 8-bit AdamW; `causal_conv1d` has no

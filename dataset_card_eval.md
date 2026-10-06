@@ -102,6 +102,9 @@ unreviewed scenarios take CLIP's environment label when it is confident (`env:by
 
 Both final-frame configs also hold `future_images`, the camera views at 1 Hz between now and the final frame.
 
+On `v3_final_frame` the constant-velocity baseline reaches success 0.33 / completed 0.38 / collided 0.24 / ADE 0.84 m /
+FDE 1.92 m (on v2: 0.62 / 0.70 / 0.20 / 0.49 / 1.12), so v3 separates a policy from "keep going" far better.
+
 ### Descriptions (`v2_annotations`, `v3_annotations`)
 
 Every final-frame scenario has a short description written by Claude Haiku 4.5 from the 11 views (5 s before to the
