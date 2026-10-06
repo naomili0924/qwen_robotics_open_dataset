@@ -104,8 +104,9 @@ class FrameWindows:
     episodes: datasets.Dataset (or list of dicts) of the episodes config for the same split.
     """
 
-    def __init__(self, frames, episodes, cfg=None):
-        self.frames, self.cfg = frames, cfg or WindowConfig()
+    def __init__(self, frames, episodes, cfg=None, allowed=None):
+        """allowed: optional set of (episode_id, frame_index) to restrict the samples to (a published sample list)."""
+        self.frames, self.cfg, self.allowed = frames, cfg or WindowConfig(), allowed
         table = frames.data
         ep_col = np.asarray(table.column("episode_id").to_pylist())
         self.t = table.column("timestamp").to_numpy()
@@ -136,6 +137,9 @@ class FrameWindows:
             prob = self.episodes.get(self.ep_ids[e], {}).get("frame_indoor_prob")
             if c.min_indoor_prob > 0 and prob is not None and len(prob) == b - a:
                 keep &= np.asarray(prob)[rows - a] >= c.min_indoor_prob
+            if self.allowed is not None:
+                eid = str(self.ep_ids[e])
+                keep &= np.array([(eid, int(r - a)) in self.allowed for r in rows], bool)
             out.append(rows[keep])
         return np.concatenate(out) if out else np.zeros(0, int)
 

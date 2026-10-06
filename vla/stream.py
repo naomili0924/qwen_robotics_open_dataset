@@ -28,7 +28,9 @@ class _Source:
         self.repo = repo
         self.frames = sorted(f for f in files if f.startswith(f"data/frames/{split}-"))
         self.episode_files = sorted(f for f in files if f.startswith(f"data/episodes/{split}-"))
+        self.sample_files = sorted(f for f in files if f.startswith(f"data/samples/{split}-"))  # a published sample list
         self.sizes = None  # frame counts, filled by load_episodes
+        self.allowed = None
 
     def load_episodes(self):
         """All episode rows of the split (small), as a list of dicts."""
@@ -40,6 +42,15 @@ class _Source:
                 rows += pq.read_table(p).to_pylist()
                 os.remove(p)
         self.sizes = sum(r["num_frames"] for r in rows)
+        if self.sample_files:  # deduplicated repo: only the listed samples are cut
+            from huggingface_hub import hf_hub_download
+            allowed = set()
+            with tempfile.TemporaryDirectory(dir=_tmp_root()) as d:
+                for f in self.sample_files:
+                    t = pq.read_table(hf_hub_download(self.repo, f, repo_type="dataset", local_dir=d), columns=["episode_id", "frame_index"])
+                    allowed |= set(zip(t.column("episode_id").to_pylist(), t.column("frame_index").to_pylist()))
+            self.allowed = allowed
+            self.sizes = len(allowed)
         return rows
 
 
@@ -90,7 +101,7 @@ class StreamFrames(IterableDataset):
 
     def _windows(self, src, path):
         ds = read_shard(src.repo, path)
-        return FrameWindows(ds, self.episodes[src.repo], self.window_cfg)
+        return FrameWindows(ds, self.episodes[src.repo], self.window_cfg, allowed=src.allowed)
 
     def __iter__(self):
         info = get_worker_info()
