@@ -178,14 +178,15 @@ def train(cfg: Config, model=None, train_ds=None, val_rows=None):
         print(json.dumps({k: (round(v, 4) if isinstance(v, float) else v) for k, v in d.items()}), flush=True)
 
     def save(name):
+        steps = sorted(run.glob("step_*"), key=lambda p: int(p.name.split("_")[1]))
+        keep = max(cfg.keep_local - 1, 0)  # prune before writing: a full-FT step folder is tens of GB
+        for old in steps[:len(steps) - keep]:  # the Hub keeps every version of <run>/last in its history
+            shutil.rmtree(old, ignore_errors=True)
         d = run / name
         model.save(d)
         torch.save({"opt": opt.state_dict(), "sched": sched.state_dict(), "step": step}, d / "trainer.pt")
         json.dump({"step": step}, open(d / "step.json", "w"))
         hub.save_last(run, name, cfg.hub_repo)
-        steps = sorted(run.glob("step_*"), key=lambda p: int(p.name.split("_")[1]))
-        for old in steps[:-cfg.keep_local]:  # the Hub keeps every version of <run>/last in its history
-            shutil.rmtree(old, ignore_errors=True)
 
     model.train()
     t0, window = time.time(), []

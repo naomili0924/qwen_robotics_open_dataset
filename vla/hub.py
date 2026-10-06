@@ -60,7 +60,11 @@ def save_last(run, name, hub_repo):
     if name != "last":
         tmp = run / "last.tmp"
         shutil.rmtree(tmp, ignore_errors=True)
-        shutil.copytree(run / name, tmp)
+        try:  # hard links: <run>/last and <run>/step_N share their files (no second copy of the Adam state)
+            shutil.copytree(run / name, tmp, copy_function=os.link)
+        except OSError:
+            shutil.rmtree(tmp, ignore_errors=True)
+            shutil.copytree(run / name, tmp)
         shutil.rmtree(run / "last", ignore_errors=True)
         tmp.rename(run / "last")
     if hub_repo:

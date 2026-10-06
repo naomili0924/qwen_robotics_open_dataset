@@ -27,12 +27,14 @@ from huggingface_hub import HfApi
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from hnod import frames as fr  # noqa: E402
+from hnod.windows import embodiment_prompt  # noqa: E402
+from vla.data import FINAL_FRAME_SYSTEM  # noqa: E402
 from vla.stream import _Source, read_shard  # noqa: E402
 
 SAMPLE_FEATURES = Features({"episode_id": Value("string"), "frame_index": Value("int32"), "source": Value("string"),
                             "embodiment": Value("string"), "bucket": Value("string"), "speed_mean": Value("float32"),
                             "heading_deg": Value("float32"), "dist_m": Value("float32"), "speed_first": Value("float32"),
-                            "speed_last": Value("float32")})
+                            "speed_last": Value("float32"), "prompt": Value("string"), "system": Value("string")})
 SHARD_BYTES = 350e6
 
 
@@ -113,7 +115,9 @@ def main():
             print(f"{repo.split('/')[1]} {Path(shard).stem}: {len(need)} episodes, {sum(len(v) for v in need.values())} images", flush=True)
     flush(force=True)
     fr.write_episodes(all_eps, out / "episodes" / "train-00000.parquet")
-    samples = sel.assign(source=sel["repo"].str.split("/").str[1])[list(SAMPLE_FEATURES)]
+    samples = sel.assign(source=sel["repo"].str.split("/").str[1],
+                         prompt=sel["embodiment"].map(lambda e: embodiment_prompt(e, 1.0, 10, 5.0)),
+                         system=FINAL_FRAME_SYSTEM.format(h=5.0, n=10))[list(SAMPLE_FEATURES)]
     Dataset.from_pandas(samples.reset_index(drop=True), features=SAMPLE_FEATURES).to_parquet(out / "samples" / "train-00000.parquet")
     json.dump(dict(total, samples=int(len(sel)), shards=shard_no), open(out / "totals.json", "w"))
     print("totals", total, "samples", len(sel), "shards", shard_no)
