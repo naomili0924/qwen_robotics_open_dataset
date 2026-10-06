@@ -15,6 +15,8 @@ Frames come from the original source repos (the published dedup repo stores no i
     python scripts/annotate_samples.py collect
     # 3. upload data/annotations/train-00000.parquet to the dedup dataset repo
     python scripts/annotate_samples.py publish
+    # evaluation scenarios (a few hundred, real-time): config <version>_annotations of the eval repo
+    python scripts/annotate_samples.py eval --version v3 --upload
 
 Needs ANTHROPIC_API_KEY (and HF_TOKEN) in the environment, e.g. from /workspace/.env.
 """
@@ -32,6 +34,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from hnod.windows import FrameWindows, WindowConfig  # noqa: E402
@@ -338,6 +341,78 @@ def collect(args):
               f"{df.output_tokens.sum() / 1e6:.2f} M out")
 
 
+def eval_mode(args):
+    """Describe the scenarios of an evaluation config (<version>_final_frame, built with future_images): 11 frames at
+    1 Hz from the row's past_images, future_images and final_image, plus the recorded path.  Real-time requests (a few
+    hundred rows); writes <out>/<version>_annotations/test-00000.parquet and uploads it as config <version>_annotations."""
+    import glob
+    import anthropic
+    from datasets import Dataset, Features, Value
+    from huggingface_hub import HfApi
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from hnod.scenario import CURRENT
+    client = anthropic.Anthropic()
+    files = sorted(glob.glob(f"{args.eval_dir}/{args.version}_final_frame/test-*.parquet"))
+    rows = [r for f in files for r in pq.read_table(f).to_pylist()]
+    print(f"{len(rows)} scenarios from {len(files)} files")
+
+    def request(r):
+        ts = np.asarray(r["timestamps"]); t0 = ts[CURRENT]; rate = r["rate_hz"]
+        step = r["final_step"]; horizon = step / rate
+        past = [r["past_images"][int(np.argmin(np.abs(ts[:CURRENT + 1] - (t0 - sec))))] for sec in range(5, 0, -1)]
+        frames = past + [r["past_images"][CURRENT]] + list(r["future_images"] or []) + [r["final_image"]]
+        labels = [f"{sec} s before now" for sec in range(5, 0, -1)] + ["now"] + \
+                 [f"{sec} s after now" for sec in range(1, len(r["future_images"] or []) + 1)] + [f"{horizon:g} s after now (final)"]
+        content = []
+        for lab, im in zip(labels, frames):
+            if im is None:
+                continue
+            content.append({"type": "text", "text": f"Frame: {lab}"})
+            b = im["bytes"] if isinstance(im, dict) else im
+            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                                         "data": jpeg_b64(__import__("PIL.Image", fromlist=["Image"]).open(io.BytesIO(b)))}})
+        e = r["ego"]; x, y, h = (np.asarray(e[k]) for k in ("x", "y", "heading"))
+        t = np.arange(len(x)) / rate
+        times = t[CURRENT] + horizon * np.arange(1, 11) / 10
+        xy = np.c_[np.interp(times, t, x), np.interp(times, t, y)] - [x[CURRENT], y[CURRENT]]
+        c_, s_ = np.cos(h[CURRENT]), np.sin(h[CURRENT])
+        loc = np.c_[c_ * xy[:, 0] + s_ * xy[:, 1], -s_ * xy[:, 0] + c_ * xy[:, 1]]
+        text = path_text(np.c_[loc, np.zeros(10)]).replace("next 5 s", f"next {horizon:g} s")
+        content.append({"type": "text", "text": f"The camera is carried by {CARRIER.get(r['embodiment'], 'a robot')}. " + text})
+        return dict(model=MODEL, max_tokens=300, system=SYSTEM, messages=[{"role": "user", "content": content}])
+
+    def ask(r):
+        params = request(r)
+        for attempt in range(5):
+            try:
+                m = client.messages.create(**params)
+                break
+            except anthropic.RateLimitError:
+                time.sleep(10 * 2 ** attempt)
+        else:
+            raise RuntimeError("rate limited")
+        text = next((b.text for b in m.content if b.type == "text"), "")
+        return dict(suite_id=r["suite_id"], scenario_id=r["scenario_id"], source=r["source"], environment=r["environment"],
+                    embodiment=r["embodiment"], **parse(text), input_tokens=m.usage.input_tokens, output_tokens=m.usage.output_tokens, model=MODEL)
+
+    with ThreadPoolExecutor(args.concurrency) as pool:
+        out = list(pool.map(ask, rows))
+    df = pd.DataFrame(out)
+    feats = Features({c: Value("string") for c in df.columns if c not in ("input_tokens", "output_tokens")} |
+                     {"input_tokens": Value("int32"), "output_tokens": Value("int32")})
+    dest = Path(args.eval_dir) / f"{args.version}_annotations"
+    dest.mkdir(parents=True, exist_ok=True)
+    Dataset.from_pandas(df, features=feats, preserve_index=False).to_parquet(dest / "test-00000.parquet")
+    print(f"{len(df)} described; {df.input_tokens.sum()} in / {df.output_tokens.sum()} out tokens")
+    for r in df.sample(min(3, len(df)), random_state=0).itertuples():
+        print(f"- [{r.source} {r.environment}] {r.description}")
+    if args.upload:
+        HfApi(token=os.environ.get("HF_TOKEN")).upload_folder(repo_id=args.eval_repo, repo_type="dataset", folder_path=str(dest),
+                                                              path_in_repo=f"data/{args.version}_annotations",
+                                                              commit_message=f"{args.version}_annotations: descriptions of the scenarios")
+        print("uploaded")
+
+
 def publish(args):
     from huggingface_hub import HfApi
     api = HfApi(token=os.environ.get("HF_TOKEN"))
@@ -348,7 +423,7 @@ def publish(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["pilot", "submit", "collect", "publish", "sheet"])
+    ap.add_argument("mode", choices=["pilot", "submit", "collect", "publish", "sheet", "eval"])
     ap.add_argument("--selected", default="/dev/shm/dedup/selected/samples.parquet")
     ap.add_argument("--out", default="/dev/shm/dedup/annotate")
     ap.add_argument("--repo", default="Jinyan0924/qwen_robotics_nav_pretrain_dedup")
@@ -361,8 +436,12 @@ def main():
     ap.add_argument("--wait", action="store_true")
     ap.add_argument("--annotations", default="/dev/shm/dedup/annotate/annotations/train-00000.parquet")
     ap.add_argument("--html", default="/dev/shm/dedup/annotate/sheet.html")
+    ap.add_argument("--version", default="v3", help="eval: suite version whose <version>_final_frame config is described")
+    ap.add_argument("--eval-dir", default="/dev/shm/final_frame_eval")
+    ap.add_argument("--eval-repo", default="Jinyan0924/qwen_robotics_nav_eval")
+    ap.add_argument("--upload", action="store_true")
     args = ap.parse_args()
-    globals()[args.mode if args.mode != "sheet" else "sheet_mode"](args)
+    globals()[{"sheet": "sheet_mode", "eval": "eval_mode"}.get(args.mode, args.mode)](args)
 
 
 if __name__ == "__main__":

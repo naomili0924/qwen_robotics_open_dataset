@@ -7,7 +7,8 @@ taken from a later row of the same recording in the source repo (rows overlap in
 image exists nowhere (the recording stops) are left out and listed.
 
 Horizon: the scenario's 10 future steps (5 s for CODa / MuSoHu / HSSD, 4 s for JRDB); RoboSense (1 Hz, 10 s)
-uses its first 5 steps (5 s).  Adds columns final_image, final_step, horizon_s, embodiment, final_xy.
+uses its first 5 steps (5 s).  Adds columns final_image, final_step, horizon_s, embodiment, final_xy, and
+future_images (the views at 1 Hz between now and the final frame, used by scripts/annotate_samples.py eval).
 
     python scripts/build_final_frame_eval.py --version v2 --upload
 """
@@ -37,7 +38,8 @@ FINAL_STEP = {"robosense": 5}  # 1 Hz, 10 s horizon: use the first 5 s
 def features():
     f = dict(eval_features())
     f.update(final_image=Image(), final_step=Value("int32"), horizon_s=Value("float32"),
-             embodiment=Value("string"), final_xy=List(Value("float32")))
+             embodiment=Value("string"), final_xy=List(Value("float32")),
+             future_images=List(Image()))  # the views at 1 s, 2 s, ... before the final one (None where missing)
     return Features(f)
 
 
@@ -56,13 +58,15 @@ def main():
                  for f in api.list_repo_files(args.repo, repo_type="dataset") if f.startswith(f"data/{args.version}/test-")]
     rows = [r for f in files for r in pq.read_table(f).to_pylist()]
 
-    # which source frame holds each scenario's final image
-    want = defaultdict(dict)  # (repo, config, split) -> {(sequence, segment, source frame): suite_id}
+    # which source frames hold each scenario's final image and its future views at 1 Hz (for annotation)
+    want = defaultdict(dict)  # (repo, config, split) -> {(sequence, segment, source frame): (suite_id, second)}
     for r in rows:
         step = FINAL_STEP.get(r["source"], N_FUTURE)
         r["final_step"] = step
-        key = (str(r["sequence"]), int(r["segment"]), int(r["source_frames"][CURRENT + step]))
-        want[(r["source_repo"], r["source_config"], r["source_split"])][key] = r["suite_id"]
+        r["future_steps"] = steps = [min(step, int(round(sec * r["rate_hz"]))) for sec in range(1, int(step / r["rate_hz"]))] + [step]
+        for k in dict.fromkeys(steps):
+            key = (str(r["sequence"]), int(r["segment"]), int(r["source_frames"][CURRENT + k]))
+            want[(r["source_repo"], r["source_config"], r["source_split"])][key] = (r["suite_id"], k)
 
     found = {}
     for (repo, config, split), keys in want.items():
@@ -76,27 +80,30 @@ def main():
             hits = {}  # row -> [(suite_id, image index)]
             for i, m in enumerate(meta):
                 for k in range(CURRENT + 1):  # steps that have an image: the past and the current one
-                    sid = keys.get((str(m["sequence"]), int(m["segment"]), int(m["source_frames"][k])))
-                    if sid and sid not in found:
-                        hits.setdefault(i, []).append((sid, k))
+                    hit = keys.get((str(m["sequence"]), int(m["segment"]), int(m["source_frames"][k])))
+                    if hit and hit not in found:
+                        hits.setdefault(i, []).append((hit, k))
             if hits:
                 images = pf.read(columns=["past_images"]).column("past_images")
                 for i, lst in hits.items():
                     cell = images[i].as_py()
-                    for sid, k in lst:
+                    for hit, k in lst:
                         if cell and cell[k] is not None:
-                            found[sid] = cell[k]["bytes"]
+                            found[hit] = cell[k]["bytes"]
             os.remove(path)
-        print(f"{repo.split('/')[1]} {config} {split}: {sum(s in found for s in keys.values())} of {len(keys)} final images",
+        print(f"{repo.split('/')[1]} {config} {split}: {sum(h in found for h in keys.values())} of {len(keys)} images",
               flush=True)
 
     out, missing = [], []
     for r in rows:
-        if r["suite_id"] not in found:
+        step, e = r["final_step"], r["ego"]
+        if (r["suite_id"], step) not in found:
             missing.append(r["suite_id"])
             continue
-        step, e = r["final_step"], r["ego"]
-        r.update(final_image={"bytes": found[r["suite_id"]], "path": None}, horizon_s=float(step / r["rate_hz"]),
+        steps = r.pop("future_steps")
+        r["future_images"] = [{"bytes": found[(r["suite_id"], k)], "path": None} if (r["suite_id"], k) in found else None
+                              for k in steps[:-1]]
+        r.update(final_image={"bytes": found[(r["suite_id"], step)], "path": None}, horizon_s=float(step / r["rate_hz"]),
                  embodiment=EMBODIMENT[r["source"]],
                  final_xy=[float(e["x"][CURRENT + step] - e["x"][CURRENT]), float(e["y"][CURRENT + step] - e["y"][CURRENT])])
         out.append(r)
