@@ -29,17 +29,33 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_eval_suite import eval_features  # noqa: E402
 from hnod.scenario import CURRENT, N_FUTURE  # noqa: E402
+from hnod.windows import camera_prompt  # noqa: E402
 
 EMBODIMENT = {"musohu": "person_walking", "coda": "wheeled_robot", "jrdb": "wheeled_robot",
               "robosense": "wheeled_robot", "hssd": "simulated_agent"}
 FINAL_STEP = {"robosense": 5}  # 1 Hz, 10 s horizon: use the first 5 s
+# whose calibration gives the camera pose above the ground: the datasets' own extrinsics for the robots; MuSoHu's
+# helmet height was estimated from the lidar during conversion, so it is not given to the model
+HEIGHT_SOURCE = {"coda": "dataset", "jrdb": "dataset", "robosense": "dataset", "hssd": "simulator", "musohu": "unknown"}
+
+
+def camera_calibration(row):
+    """The row's camera dict with height_m / height_source, from the stored pose when its source is certain."""
+    cam = dict(row["camera"])
+    src = HEIGHT_SOURCE.get(row["source"], "unknown")
+    T = row["camera"].get("T_scenario_from_camera")
+    z = float(T[CURRENT][11]) if T and src != "unknown" else None  # translation z of the 4x4 row-major pose
+    cam.update(height_m=z, height_source=src if z is not None else "unknown")
+    return cam
 
 
 def features():
     f = dict(eval_features())
     f.update(final_image=Image(), final_step=Value("int32"), horizon_s=Value("float32"),
              embodiment=Value("string"), final_xy=List(Value("float32")),
-             future_images=List(Image()))  # the views at 1 s, 2 s, ... before the final one (None where missing)
+             future_images=List(Image()),  # the views at 1 s, 2 s, ... before the final one (None where missing)
+             camera_height_m=Value("float32"), camera_height_source=Value("string"),  # from the dataset's calibration, else null / unknown
+             camera_prompt=Value("string"))  # hnod.windows.camera_prompt of the row's camera (field of view, height or "unknown")
     return Features(f)
 
 
@@ -103,6 +119,8 @@ def main():
         steps = r.pop("future_steps")
         r["future_images"] = [{"bytes": found[(r["suite_id"], k)], "path": None} if (r["suite_id"], k) in found else None
                               for k in steps[:-1]]
+        cam = camera_calibration(r)
+        r.update(camera_height_m=cam["height_m"], camera_height_source=cam["height_source"], camera_prompt=camera_prompt(cam))
         r.update(final_image={"bytes": found[(r["suite_id"], step)], "path": None}, horizon_s=float(step / r["rate_hz"]),
                  embodiment=EMBODIMENT[r["source"]],
                  final_xy=[float(e["x"][CURRENT + step] - e["x"][CURRENT]), float(e["y"][CURRENT + step] - e["y"][CURRENT])])

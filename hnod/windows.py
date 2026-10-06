@@ -45,6 +45,7 @@ class WindowConfig:
     # No goal coordinates, no instruction; the prompt only names the embodiment.
     mode: str = "prompt"             # prompt (goal in words / coordinates, waypoints by distance) | final_frame
     horizon_s: float = 5.0
+    camera_prompt: bool = False  # final_frame: add the camera sentence (field of view, height or 'unknown') to the prompt
 
 
 EMBODIMENT_TAGS = {"person_walking": "a human walking", "wheeled_robot": "a robot", "legged_robot": "a robot",
@@ -55,9 +56,33 @@ EMBODIMENT_TEMPLATE = ("The camera is carried by {tag}. The past views are sampl
                        "Please predict the next {n} positions at {out_hz:g} Hz.")
 
 
-def embodiment_prompt(embodiment, past_dt_s=1.0, n=10, horizon_s=5.0):
-    return EMBODIMENT_TEMPLATE.format(tag=EMBODIMENT_TAGS.get(embodiment, "a robot"), past_hz=1.0 / past_dt_s, n=n,
+KNOWN_HEIGHT_SOURCES = ("dataset", "simulator")  # calibration we are certain of; anything else is "unknown"
+
+
+def camera_prompt(camera):
+    """One sentence about the camera, from stored calibration only: the field of view from K and the height above
+    the ground when its source is the dataset's calibration or a simulator.  Nothing is estimated or guessed: a
+    missing or estimated value is stated as unknown, so the model knows it has to infer it from the images."""
+    cam = camera or {}
+    K, w, h = cam.get("K"), cam.get("width"), cam.get("height")
+    if K is not None and len(K) >= 5 and w and K[0] and K[0] > 0:
+        hfov = 2 * np.degrees(np.arctan(w / (2 * K[0])))
+        text = f"The camera's horizontal field of view is {hfov:.0f} degrees"
+        if h and K[4] and K[4] > 0:
+            text += f" and its vertical field of view {2 * np.degrees(np.arctan(h / (2 * K[4]))):.0f} degrees"
+    else:
+        text = "The camera's field of view is unknown"
+    hm = cam.get("height_m")
+    if hm is not None and np.isfinite(hm) and cam.get("height_source") in KNOWN_HEIGHT_SOURCES:
+        return text + f"; it is mounted {hm:.2f} m above the ground."
+    return text + "; its height above the ground is unknown."
+
+
+def embodiment_prompt(embodiment, past_dt_s=1.0, n=10, horizon_s=5.0, camera=None):
+    """The embodiment sentence; with `camera` (an episode's camera dict, possibly empty) also the camera sentence."""
+    text = EMBODIMENT_TEMPLATE.format(tag=EMBODIMENT_TAGS.get(embodiment, "a robot"), past_hz=1.0 / past_dt_s, n=n,
                                       out_hz=n / horizon_s)
+    return text if camera is None else text + " " + camera_prompt(camera)
 
 
 def _wrap(a):
@@ -228,7 +253,8 @@ class FrameWindows:
         return dict(row=i, episode_id=str(self.ep_ids[e]), frame_index=int(i - a), history_rows=rows,
                     final_row=j, final_dt_s=float(self.t[j] - t0), target=np.c_[wxy, wyaw].astype(np.float32),
                     embodiment=embodiment, task="final_frame",
-                    prompt=embodiment_prompt(embodiment, c.past_dt_s, c.n_waypoints, c.horizon_s),
+                    prompt=embodiment_prompt(embodiment, c.past_dt_s, c.n_waypoints, c.horizon_s,
+                                             camera=(ep.get("camera") or {}) if c.camera_prompt else None),
                     dataset=ep.get("dataset", ""), rate_hz=float(ep.get("rate_hz", 0) or 0))
 
     def images(self, rows, column="image"):

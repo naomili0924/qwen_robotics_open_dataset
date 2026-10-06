@@ -50,6 +50,7 @@ EPISODE_FEATURES = Features({
                "distortion_model": Value("string"),   # opencv_rational | opencv | fisheye | none
                "distortion": List(Value("float64")),
                "height_m": Value("float32"),           # above the ground, NaN if unknown
+               "height_source": Value("string"),       # dataset | simulator | unknown (estimated values are not stored)
                "stereo_baseline_m": Value("float32")},  # NaN if mono
     # language goals: frames start..end (inclusive), the instruction names what is reached at end_frame
     "segments": List(SEGMENT),

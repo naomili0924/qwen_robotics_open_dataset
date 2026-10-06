@@ -90,3 +90,16 @@ def test_timed_scoring_completion_and_resampling():
     row5 = dict(row, final_step=5, final_xy=[2.5, 0.0])     # a 10 s scenario scored on its first 5 steps
     steps = suite.steps_from_timed(suite.timed_baselines(row5)["recorded"], 5)
     assert np.allclose(steps[:5, 0], [0.5, 1.0, 1.5, 2.0, 2.5]) and np.allclose(steps[5:, 0], 2.5)
+
+
+def test_camera_sentence_uses_stored_calibration_only_and_says_unknown_otherwise():
+    from hnod.windows import camera_prompt, embodiment_prompt
+    cam = dict(width=960, height=600, K=[368.0, 0, 480, 0, 368.0, 300, 0, 0, 1], height_m=1.25, height_source="dataset")
+    t = camera_prompt(cam)
+    assert "horizontal field of view is 105 degrees" in t and "mounted 1.25 m above the ground" in t
+    # an estimated height (or no source) is never passed on as a fact
+    assert "height above the ground is unknown" in camera_prompt(dict(cam, height_source="estimated"))
+    assert "height above the ground is unknown" in camera_prompt(dict(cam, height_m=float("nan"), height_source="dataset"))
+    assert camera_prompt({}) == "The camera's field of view is unknown; its height above the ground is unknown."
+    assert camera_prompt(cam) in embodiment_prompt("person_walking", camera=cam)
+    assert "field of view" not in embodiment_prompt("person_walking")

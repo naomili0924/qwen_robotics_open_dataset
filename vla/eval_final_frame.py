@@ -42,7 +42,14 @@ def _img(cell):
     return Image.open(io.BytesIO(cell["bytes"])).convert("RGB")
 
 
-def build_items(rows, cfg, final="true", prompt="true"):
+def row_camera(r):
+    """Camera dict of an eval row for the prompt (field of view from K; height only when its source is certain)."""
+    cam = dict(r.get("camera") or {})
+    cam.update(height_m=r.get("camera_height_m"), height_source=r.get("camera_height_source"))
+    return cam
+
+
+def build_items(rows, cfg, final="true", prompt="true", camera="true"):
     from vla.data import final_frame_item
     items = []
     for i, r in enumerate(rows):
@@ -58,7 +65,11 @@ def build_items(rows, cfg, final="true", prompt="true"):
         emb = r["embodiment"]
         if prompt == "swapped":
             emb = "wheeled_robot" if emb == "person_walking" else "person_walking"
-        items.append(final_frame_item(past, fin, embodiment_prompt(emb, cfg.past_dt_s, cfg.horizon, cfg.horizon_s), cfg, index=i, scenario_id=r["suite_id"]))
+        cam = None
+        if cfg.camera_prompt:  # "unknown": the sentence says field of view and height are unknown (does the model use it?)
+            cam = row_camera(r) if camera == "true" else {}
+        items.append(final_frame_item(past, fin, embodiment_prompt(emb, cfg.past_dt_s, cfg.horizon, cfg.horizon_s, camera=cam),
+                                      cfg, index=i, scenario_id=r["suite_id"]))
     return items
 
 
@@ -104,8 +115,11 @@ def main():
         pipe = (NavigationPipeline.from_hub(args.hub_repo, args.checkpoint, args.revision, **opts) if args.hub_repo
                 else NavigationPipeline.from_pretrained(args.checkpoint, **opts))
         pipe.model.eval()
-        for name, kw in (("model", {}), ("model, swapped final frame", dict(final="swapped")),
-                         ("model, no final frame", dict(final="none")), ("model, swapped prompt", dict(prompt="swapped"))):
+        conditions = [("model", {}), ("model, swapped final frame", dict(final="swapped")),
+                      ("model, no final frame", dict(final="none")), ("model, swapped prompt", dict(prompt="swapped"))]
+        if pipe.cfg.camera_prompt:  # does the model use the calibration sentence?
+            conditions.append(("model, unknown camera", dict(camera="unknown")))
+        for name, kw in conditions:
             P = predict(pipe, build_items(rows, pipe.cfg, **kw), args.batch_size)
             preds[name] = P
             report["conditions"][name] = table(rows, [suite.score_timed(r, p) for r, p in zip(rows, P)])

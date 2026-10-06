@@ -31,6 +31,8 @@ class Config:
                                         # (past frames + the frame horizon_s ahead -> positions in time; cfg.frames
                                         # counts every image: past + now + final)
     horizon_s: float = 5.0              # final_frame: the final frame is this far ahead; `horizon` positions span it
+    camera_prompt: bool = False         # final_frame: tell the model the camera's field of view and height from the stored
+                                        # calibration (hnod.windows.camera_prompt); values we are not certain of are "unknown"
     stream: bool = False                # frames: stream shards from the Hub (bounded disk) instead of downloading the split
     val_items: int = 256                # stream: validation items (a single pass, spread over episodes)
     # --- model
