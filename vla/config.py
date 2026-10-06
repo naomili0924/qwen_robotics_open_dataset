@@ -23,6 +23,7 @@ class Config:
     data_format: str = "scenarios"      # scenarios (21-step rows, cfg.data) | frames (cfg.frames_repos)
     frames_repos: str = ""              # comma-separated repos with frames / episodes configs, e.g. ..._egowalk,..._coda
     frames_mix: str = "proportional"    # proportional to size | sqrt (to its square root) | equal (each repo equally often)
+    val_frames_repos: str = ""          # repos for the validation stream when they differ (a reduced training repo has no val split)
     spacing_m: float = 0.25             # frames: target waypoints every this many metres along the path (horizon of them)
     past_dt_s: float = 0.5              # frames: history images every this many seconds
     min_indoor_prob: float = 0.0        # frames: keep only samples whose current frame is at least this likely indoor
@@ -35,6 +36,8 @@ class Config:
     # --- model
     backbone: str = "Qwen/Qwen2.5-VL-3B-Instruct"
     backbone_mode: str = "lora"         # frozen | lora | full
+    lora_targets: str = ""              # regex of module names to adapt (default: attention, linear attention and MLPs of the LM)
+    backbone_dtype: str = "auto"        # auto (fp32 master weights for full fine-tuning, else bf16) | bf16 | fp32
     lora_rank: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.05

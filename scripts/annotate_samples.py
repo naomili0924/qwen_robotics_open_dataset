@@ -11,7 +11,7 @@ Frames come from the original source repos (the published dedup repo stores no i
     # 1. pilot: a stratified handful, real-time requests, a parquet + an HTML sheet to look at
     python scripts/annotate_samples.py pilot --n 200
     # 2. the full set through the Batch API (half price): submit, then collect once the batches have ended
-    python scripts/annotate_samples.py submit
+    for k in 0 1 2 3 4 5; do python scripts/annotate_samples.py submit --part $k/6 & done; wait
     python scripts/annotate_samples.py collect
     # 3. upload data/annotations/train-00000.parquet to the dedup dataset repo
     python scripts/annotate_samples.py publish
@@ -251,7 +251,8 @@ def submit(args):
     sel = load_selection(args)
     out = Path(args.out)
     (out / "meta").mkdir(parents=True, exist_ok=True)
-    state_p = out / "batches.json"
+    k, n = (int(x) for x in args.part.split("/"))
+    state_p = out / ("batches.json" if n == 1 else f"batches_{k}of{n}.json")
     state = json.load(open(state_p)) if state_p.exists() else {"batches": {}, "done_shards": []}
     pending, size, n_sent = [], 0, 0
 
@@ -274,7 +275,8 @@ def submit(args):
         print(f"batch {b.id}: {len(pending)} requests, {size / 1e6:.0f} MB", flush=True)
         pending, size = [], 0
 
-    for (repo, shard), g in sel.groupby(["repo", "shard"]):
+    groups = list(sel.groupby(["repo", "shard"]))[k::n]  # --part k/n: every n-th shard (run n submitters in parallel)
+    for (repo, shard), g in groups:
         key = f"{repo}|{shard}"
         if key in state["done_shards"]:
             continue
@@ -295,7 +297,9 @@ def collect(args):
     import anthropic
     client = anthropic.Anthropic()
     out = Path(args.out)
-    state = json.load(open(out / "batches.json"))
+    state = {"batches": {}}
+    for p in sorted(out.glob("batches*.json")):  # one state file per submitter part
+        state["batches"].update(json.load(open(p))["batches"])
     (out / "results").mkdir(exist_ok=True)
     while True:
         open_ids = [b for b in state["batches"] if not (out / "results" / f"{b}.parquet").exists()]
@@ -325,6 +329,7 @@ def collect(args):
     done = sorted((out / "results").glob("*.parquet"))
     if done:
         df = pd.concat([pd.read_parquet(p) for p in done], ignore_index=True)
+        df = df.sort_values("status").drop_duplicates("custom_id")  # a shard redone after a restart: keep one answer
         df["model"] = MODEL
         (out / "annotations").mkdir(exist_ok=True)
         df.to_parquet(out / "annotations" / "train-00000.parquet")
@@ -352,6 +357,7 @@ def main():
     ap.add_argument("--shards-per-source", type=int, default=2)
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--max-samples", type=int, default=0)
+    ap.add_argument("--part", default="0/1", help="submit: k/n, this process takes every n-th shard starting at k")
     ap.add_argument("--wait", action="store_true")
     ap.add_argument("--annotations", default="/dev/shm/dedup/annotate/annotations/train-00000.parquet")
     ap.add_argument("--html", default="/dev/shm/dedup/annotate/sheet.html")

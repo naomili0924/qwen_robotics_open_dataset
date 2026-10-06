@@ -54,8 +54,10 @@ class NavPolicy(nn.Module):
         self.cfg = cfg
         self.device = device
         self.processor = AutoProcessor.from_pretrained(cfg.backbone)
+        dtype = {"bf16": torch.bfloat16, "fp32": torch.float32}.get(
+            cfg.backbone_dtype, torch.float32 if cfg.backbone_mode == "full" else torch.bfloat16)
         full = AutoModelForImageTextToText.from_pretrained(
-            cfg.backbone, dtype=torch.float32 if cfg.backbone_mode == "full" else torch.bfloat16, device_map=device,
+            cfg.backbone, dtype=dtype, device_map=device,
             **({"attn_implementation": cfg.attn_implementation} if cfg.attn_implementation else {}))
         self.backbone = full.model  # vision encoder + language model, without the vocabulary head
         if cfg.text_loss:  # the description target needs the vocabulary head (frozen; tied to the embeddings on small Qwens)
@@ -72,6 +74,7 @@ class NavPolicy(nn.Module):
             targets = rf".*{lm}$"
             if cfg.tune_vision:
                 targets = rf".*({lm}|visual\.blocks.*\.(qkv|proj|gate_proj|up_proj|down_proj))$"
+            targets = cfg.lora_targets or targets
             self.backbone = get_peft_model(self.backbone, LoraConfig(
                 r=cfg.lora_rank, lora_alpha=cfg.lora_alpha, lora_dropout=cfg.lora_dropout, target_modules=targets))
         elif cfg.backbone_mode == "full":

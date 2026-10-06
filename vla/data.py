@@ -192,14 +192,14 @@ class _StreamItem:
         return frame_item(windows, k, self.cfg)
 
 
-def stream_frames(cfg, split, finite=False, max_items=0):
+def stream_frames(cfg, split, finite=False, max_items=0, repos=None):
     """vla.stream.StreamFrames over cfg.frames_repos (Hub repos), bounded disk use."""
     import dataclasses
     from vla.stream import StreamFrames
     wcfg = window_config(cfg)
     if finite:
         wcfg = dataclasses.replace(wcfg, stride=10)  # validation: spread a fixed number of items over episodes
-    repos = [r.strip() for r in cfg.frames_repos.split(",") if r.strip()]
+    repos = [r.strip() for r in (repos or cfg.frames_repos).split(",") if r.strip()]
     return StreamFrames(repos, split, wcfg, _StreamItem(cfg), mix=cfg.frames_mix, seed=cfg.seed, finite=finite,
                         max_items=max_items)
 

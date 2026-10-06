@@ -105,7 +105,8 @@ def train(cfg: Config, model=None, train_ds=None, val_rows=None):
     if cfg.data_format == "frames" and cfg.stream:
         assert not tasks, "auxiliary tasks need scenario rows; per-frame data trains the trajectory only"
         train_set = stream_frames(cfg, cfg.train_split)
-        val_set = stream_frames(cfg, cfg.val_split, finite=True, max_items=max(1, cfg.val_items // max(1, cfg.workers)))
+        val_set = stream_frames(cfg, cfg.val_split, finite=True, max_items=max(1, cfg.val_items // max(1, cfg.workers)),
+                                repos=cfg.val_frames_repos or None)
         val_rows = None
         print("train stream:", train_set.describe(), "| val:", val_set.describe(), flush=True)
         if cfg.action_scale <= 0:
