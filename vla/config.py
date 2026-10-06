@@ -26,6 +26,10 @@ class Config:
     spacing_m: float = 0.25             # frames: target waypoints every this many metres along the path (horizon of them)
     past_dt_s: float = 0.5              # frames: history images every this many seconds
     min_indoor_prob: float = 0.0        # frames: keep only samples whose current frame is at least this likely indoor
+    window_mode: str = "prompt"         # frames: prompt (goal in the prompt, waypoints by distance) | final_frame
+                                        # (past frames + the frame horizon_s ahead -> positions in time; cfg.frames
+                                        # counts every image: past + now + final)
+    horizon_s: float = 5.0              # final_frame: the final frame is this far ahead; `horizon` positions span it
     stream: bool = False                # frames: stream shards from the Hub (bounded disk) instead of downloading the split
     val_items: int = 256                # stream: validation items (a single pass, spread over episodes)
     # --- model

@@ -17,6 +17,12 @@ SYSTEM_PROMPT = ("You are the navigation policy of a mobile robot. The images ar
                  "current frame: x forward, y left.")
 
 
+FINAL_FRAME_SYSTEM = ("You watch a camera carried through the world by a human or a robot. The images are its front "
+                      "view: first the past, oldest first, then the view now, then the view at the end of the next "
+                      "{h:g} seconds. Predict where the camera is at {n} moments evenly spaced over those {h:g} seconds, "
+                      "in metres relative to its position now: x forward, y left.")
+
+
 def load_split(cfg, split, columns=None):
     """A map-style datasets.Dataset for one split, local parquet directory or Hub repo."""
     if os.path.isdir(cfg.data):
@@ -97,6 +103,10 @@ class NavDataset(Dataset):
 
 def window_config(cfg):
     from hnod.windows import WindowConfig
+    if cfg.window_mode == "final_frame":
+        return WindowConfig(mode="final_frame", horizon_s=cfg.horizon_s, n_waypoints=cfg.horizon,
+                            n_past=cfg.frames - 2, past_dt_s=cfg.past_dt_s, min_indoor_prob=cfg.min_indoor_prob,
+                            seed=cfg.seed)
     return WindowConfig(n_waypoints=cfg.horizon, spacing_m=cfg.spacing_m, n_past=CURRENT, past_dt_s=cfg.past_dt_s,
                         min_indoor_prob=cfg.min_indoor_prob, seed=cfg.seed)
 
@@ -136,9 +146,31 @@ def frames_prompt(s, cfg):
     return " ".join(parts)
 
 
+def final_frame_tags(n_images, cfg):
+    """Text placed before each image: past views, the current view, the view at the end of the horizon."""
+    n_past = n_images - 2
+    past = [f"View {cfg.past_dt_s * (n_past - j):g} s ago:" for j in range(n_past)]
+    return past + ["View now:", f"View in {cfg.horizon_s:g} s:"]
+
+
+def final_frame_item(images, final_image, prompt, cfg, target=None, index=0, scenario_id="0"):
+    """Item for the final-frame task: images + embodiment sentence only (no positions, speed or goal numbers)."""
+    imgs = [im.convert("RGB") for im in images][-(cfg.frames - 1):]
+    imgs = [imgs[0]] * (cfg.frames - 1 - len(imgs)) + imgs + [final_image.convert("RGB")]
+    if target is None:
+        target = np.zeros((cfg.horizon, cfg.action_dim), np.float32)
+    return dict(index=index, scenario_id=scenario_id, images=imgs, image_tags=final_frame_tags(len(imgs), cfg),
+                system=FINAL_FRAME_SYSTEM.format(h=cfg.horizon_s, n=cfg.horizon), prompt=prompt,
+                kin=np.zeros(KIN_DIM, np.float32), target=np.asarray(target, np.float32), aux={})
+
+
 def frame_item(windows, k, cfg, index=0):
     """One training item (NavDataset layout) for sample k of a hnod.windows.FrameWindows."""
     s = windows[k]
+    if "final_image" in s:
+        return final_frame_item(s["images"], s["final_image"], s["prompt"], cfg,
+                                target=s["target"][:, :cfg.action_dim] / cfg.action_scale, index=index,
+                                scenario_id=f"{s['episode_id']}:{s['frame_index']}")
     goal = s["goal"] if s["goal_given"] else np.zeros(2, np.float32)
     kin = np.r_[s["past_xy"].ravel(), s["velocity"], goal].astype(np.float32)
     return dict(index=index, scenario_id=f"{s['episode_id']}:{s['frame_index']}",
@@ -238,9 +270,11 @@ class Collator:
     def __call__(self, items):
         texts, images = [], []
         for it in items:
-            messages = [{"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
-                        {"role": "user", "content": [*[{"type": "image"} for _ in it["images"]],
-                                                     {"type": "text", "text": it["prompt"]}]}]
+            tags = it.get("image_tags")
+            views = [{"type": "image"} for _ in it["images"]] if not tags else \
+                [part for tag in tags for part in ({"type": "text", "text": tag}, {"type": "image"})]
+            messages = [{"role": "system", "content": [{"type": "text", "text": it.get("system", SYSTEM_PROMPT)}]},
+                        {"role": "user", "content": [*views, {"type": "text", "text": it["prompt"]}]}]
             texts.append(self.processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=False))
             images += it["images"]
         batch = dict(self.processor(text=texts, images=images, padding=True, return_tensors="pt"))

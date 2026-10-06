@@ -20,8 +20,10 @@ def push_checkpoint(run, hub_repo, private=True):
     try:
         api = _api()
         api.create_repo(hub_repo, repo_type="model", private=private, exist_ok=True)
+        big = (run / "last" / "trainer.pt").exists() and (run / "last" / "trainer.pt").stat().st_size > 2e9
         api.upload_folder(repo_id=hub_repo, repo_type="model", folder_path=str(run / "last"),
-                          path_in_repo=f"{run.name}/last", commit_message=f"{run.name}: checkpoint")
+                          path_in_repo=f"{run.name}/last", commit_message=f"{run.name}: checkpoint",
+                          ignore_patterns=["trainer.pt"] if big else None)  # full fine-tune: Adam state is tens of GB
         for name in ("log.jsonl", "config.json"):
             if (run / name).exists():
                 api.upload_file(repo_id=hub_repo, repo_type="model", path_or_fileobj=str(run / name),
@@ -37,14 +39,14 @@ def resolve_resume(cfg):
     if cfg.resume != "auto":
         return cfg.resume
     run = Path(cfg.run)
-    if (run / "last" / "trainer.pt").exists():
+    if (run / "last" / "step.json").exists() or (run / "last" / "trainer.pt").exists():
         return str(run / "last")
     if cfg.hub_repo:
         try:
             from huggingface_hub import snapshot_download
             snapshot_download(cfg.hub_repo, repo_type="model", token=os.environ.get("HF_TOKEN"), local_dir=str(run.parent),
                               allow_patterns=[f"{run.name}/last/*", f"{run.name}/last/**", f"{run.name}/log.jsonl"])
-            if (run / "last" / "trainer.pt").exists():
+            if (run / "last" / "step.json").exists() or (run / "last" / "trainer.pt").exists():
                 print(f"fetched {run.name}/last from {cfg.hub_repo}", flush=True)
                 return str(run / "last")
         except Exception as e:

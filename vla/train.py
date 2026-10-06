@@ -150,10 +150,15 @@ def train(cfg: Config, model=None, train_ds=None, val_rows=None):
     resume = hub.resolve_resume(cfg)
     if resume:
         model.load(resume)
-        state = torch.load(Path(resume) / "trainer.pt", map_location="cpu")
-        opt.load_state_dict(state["opt"])
-        sched.load_state_dict(state["sched"])
-        step = state["step"]
+        if (Path(resume) / "trainer.pt").exists():
+            state = torch.load(Path(resume) / "trainer.pt", map_location="cpu")
+            opt.load_state_dict(state["opt"])
+            sched.load_state_dict(state["sched"])
+            step = state["step"]
+        else:  # weights only (the optimizer state of a full fine-tune is not uploaded): Adam restarts
+            step = json.load(open(Path(resume) / "step.json"))["step"]
+            for _ in range(step):
+                sched.step()
         print(f"resumed from {resume} at step {step}", flush=True)
 
     writer = SummaryWriter(run / "tb")
@@ -172,6 +177,7 @@ def train(cfg: Config, model=None, train_ds=None, val_rows=None):
         d = run / name
         model.save(d)
         torch.save({"opt": opt.state_dict(), "sched": sched.state_dict(), "step": step}, d / "trainer.pt")
+        json.dump({"step": step}, open(d / "step.json", "w"))
         hub.save_last(run, name, cfg.hub_repo)
         steps = sorted(run.glob("step_*"), key=lambda p: int(p.name.split("_")[1]))
         for old in steps[:-cfg.keep_local]:  # the Hub keeps every version of <run>/last in its history

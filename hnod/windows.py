@@ -40,6 +40,19 @@ class WindowConfig:
     still_m: float = 0.05            # movement below this (odometry jitter) does not count as travel
     min_indoor_prob: float = 0.0     # keep only samples whose current frame is at least this likely indoor
     seed: int = 0
+    # mode "final_frame": the model sees past frames and the one frame `horizon_s` ahead and must reproduce
+    # the recorded motion in between: n_waypoints positions evenly spaced IN TIME (speed is part of the target).
+    # No goal coordinates, no instruction; the prompt only names the embodiment.
+    mode: str = "prompt"             # prompt (goal in words / coordinates, waypoints by distance) | final_frame
+    horizon_s: float = 5.0
+
+
+EMBODIMENT_PROMPTS = {"person_walking": "You are a human walking.", "wheeled_robot": "You are a robot.",
+                      "legged_robot": "You are a robot.", "simulated_agent": "You are a robot."}
+
+
+def embodiment_prompt(embodiment):
+    return EMBODIMENT_PROMPTS.get(embodiment, "You are a robot.")
 
 
 def _wrap(a):
@@ -113,6 +126,8 @@ class FrameWindows:
             rows = np.arange(a, b, c.stride)
             left = self.s[b - 1] - self.s[rows]
             keep = (left >= need) | (at_rest & (left >= 0))
+            if c.mode == "final_frame":  # the recording must continue for the whole horizon (standing still counts)
+                keep = self.t[b - 1] - self.t[rows] >= c.horizon_s - 1e-6
             prob = self.episodes.get(self.ep_ids[e], {}).get("frame_indoor_prob")
             if c.min_indoor_prob > 0 and prob is not None and len(prob) == b - a:
                 keep &= np.asarray(prob)[rows - a] >= c.min_indoor_prob
@@ -138,6 +153,8 @@ class FrameWindows:
         ep = self.episodes.get(self.ep_ids[e], {})
         rng = np.random.default_rng([c.seed, i])
         p0 = self.pose[i]
+        if c.mode == "final_frame":
+            return self._final_frame_sample(i, e, a, b, ep)
 
         # history: frames at t - j * past_dt, nearest at or before, clamped to the episode start
         want = self.t[i] - c.past_dt_s * np.arange(c.n_past, -1, -1)
@@ -185,6 +202,23 @@ class FrameWindows:
                     task=task, instruction=instruction, prompt=prompt,
                     dataset=ep.get("dataset", ""), rate_hz=float(ep.get("rate_hz", 0) or 0))
 
+    def _final_frame_sample(self, i, e, a, b, ep):
+        """Past frames + the frame horizon_s ahead -> the recorded positions in between, by time."""
+        c, p0, t0 = self.cfg, self.pose[i], self.t[i]
+        want = t0 - c.past_dt_s * np.arange(c.n_past, -1, -1)
+        rows = np.clip(a + np.searchsorted(self.t[a:b], want + 1e-6, side="right") - 1, a, i)
+        tt = self.t[a:b]
+        times = t0 + c.horizon_s * np.arange(1, c.n_waypoints + 1) / c.n_waypoints
+        xy = np.stack([np.interp(times, tt, self.pose[a:b, 0]), np.interp(times, tt, self.pose[a:b, 1])], -1)
+        yaw = np.interp(times, tt, np.unwrap(self.pose[a:b, 3]))
+        wxy, wyaw = to_frame(p0, xy, yaw)
+        j = a + int(np.argmin(np.abs(tt - (t0 + c.horizon_s))))  # the frame nearest the end of the horizon
+        embodiment = ep.get("embodiment", "") or ""
+        return dict(row=i, episode_id=str(self.ep_ids[e]), frame_index=int(i - a), history_rows=rows,
+                    final_row=j, final_dt_s=float(self.t[j] - t0), target=np.c_[wxy, wyaw].astype(np.float32),
+                    embodiment=embodiment, prompt=embodiment_prompt(embodiment), task="final_frame",
+                    dataset=ep.get("dataset", ""), rate_hz=float(ep.get("rate_hz", 0) or 0))
+
     def images(self, rows, column="image"):
         """PIL images for frame rows (repeats allowed)."""
         uniq, inv = np.unique(rows, return_inverse=True)
@@ -193,5 +227,9 @@ class FrameWindows:
 
     def __getitem__(self, k):
         out = self.sample(k)
-        out["images"] = self.images(out["history_rows"])
+        if "final_row" in out:  # history (oldest first, the last is now) then the final frame
+            imgs = self.images(np.r_[out["history_rows"], out["final_row"]])
+            out["images"], out["final_image"] = imgs[:-1], imgs[-1]
+        else:
+            out["images"] = self.images(out["history_rows"])
         return out

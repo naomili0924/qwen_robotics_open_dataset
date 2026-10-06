@@ -30,6 +30,11 @@ imitation on open navigation data. Code, data conversion and evaluation:
 > It collides often in cluttered houses (see Results). **Research use only, non-commercial** (see Licence).
 > Not safety-tested: do not run it on a robot near people.
 
+> **Update 2026-10-06:** run `e1_all_sqrt` was stopped at step 12,000. Tests showed it takes its goal from a
+> numeric side-channel and ignores the prompt text, so it is kept only as a baseline. Folders starting with `ff`
+> belong to the next stage, final-frame pretraining (past frames + the frame 5 s ahead -> motion), described in
+> `docs/final_frame_pretraining.md` of the code repository; `ff0_e2e_test` is a 500-step pipeline test, not a model to use.
+
 ## Checkpoints
 
 All under `e1_all_sqrt/`:

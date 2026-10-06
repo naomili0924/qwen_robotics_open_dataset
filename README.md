@@ -49,6 +49,10 @@ pipe = NavigationPipeline.from_hub("<user>/<repo>", "<run>/best")
 path = pipe.predict_path(images, goal=(4.0, -1.0))     # (8, 2) waypoints in metres, 0.25 m apart
 ```
 
+**Final-frame pretraining** (current stage, [`docs/final_frame_pretraining.md`](docs/final_frame_pretraining.md)):
+past frames + the frame 5 s ahead -> the recorded positions in between; `bash scripts/run_ff.sh <run> <steps>`,
+`python -m vla.eval_final_frame --hub-repo <user>/<repo> --checkpoint <run>/last --out eval.json`.
+
 **Training data** in a per-frame format (configs `frames` + `episodes`; [`hnod/frames.py`](hnod/frames.py)):
 raw images and metric poses per frame, with history, waypoints (by distance along the path, so no speed is baked
 in), goal and prompt cut at load time by [`hnod/windows.py`](hnod/windows.py).

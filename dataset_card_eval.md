@@ -19,6 +19,10 @@ configs:
   data_files:
   - split: test
     path: data/v2/test-*.parquet
+- config_name: v2_final_frame
+  data_files:
+  - split: test
+    path: data/v2_final_frame/test-*.parquet
 - config_name: v1
   data_files:
   - split: test
@@ -50,6 +54,12 @@ path (green), the goal of the prompt (star) and the naive baselines (dashed).*
 v2 is easier for naive planners than v1: walking straight to the goal succeeds in 69% of v2's indoor scenarios and
 20% of v1's, because real indoor walks are mostly corridors and halls with a clear line of sight, while the simulated
 houses force turns through doorways. Report both versions while v2 is the only all-real indoor set.
+
+`v2_final_frame` is suite v2 for the **final-frame task**: 134 of the 150 scenarios, each with the camera frame
+at the end of its horizon (`final_image`), the recorder's `embodiment`, and where the recording ended (`final_xy`).
+The model sees past frames and that final frame and must reproduce the recorded motion in between; it is scored
+at the recorded timing for collision, completion (end within 1 m) and smoothness (`python -m vla.eval_final_frame`).
+16 scenarios whose recording stops before the end image exists are left out (`missing.json`).
 
 ## Protocol
 
