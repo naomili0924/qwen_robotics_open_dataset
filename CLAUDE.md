@@ -97,19 +97,30 @@ end to end on a sample first, then discuss scale (more GPUs may be rented).
 - **Backbone decision (owner, 2026-10-06):** start with Qwen3.5-2B-Base, move to Qwen3.5-4B-Base (the Qwen-VLA
   backbone) once the 2B shows it learns; the owner may rent a bigger GPU for the 4B. `scripts/run_ff.sh <run>
   <steps> 2b|4b`. Prompt is Qwen-VLA style: who carries the camera + frame rates, no task.
-- **Running / last run: `ff2_qwen35_2b`** (started 2026-10-06 01:25 UTC, 5,000 steps x 16, about 6 h on one
-  H100 NVL at 4.1 s/step, 39 GB). Milestones uploaded at steps 1,000, 2,000, 2,500, 5,000 with evaluations
-  (`scripts/watch_checkpoints.py --milestones`); `last/` every 500 steps. Watch the "swapped final frame"
-  check in each milestone's eval: if the prediction does not move, the final frame is not being used.
+- **`ff2_qwen35_2b`** (2B full FT on all 1.11 M frames, 4.1 s/step): stopped by the owner at step 3,450 (GPU wanted for
+  the next run); milestones 1,000-2,500 + `best` (step 3,000) on the Hub. It never used the final frame (swapping it
+  moved the prediction 0.03 m); success 16-26%.
+- **Dedup set + descriptions (2026-10-06):** `Jinyan0924/qwen_robotics_nav_pretrain_dedup` = 49,391 samples chosen
+  motion-first (`scripts/build_dedup_index.py`, `select_dedup.py`, `publish_dedup.py`), with a `samples` table
+  (prompt, system, motion class) and an `annotations` table: Claude Haiku 4.5 descriptions of each sample from 11
+  frames (-5 s..+5 s) + the recorded path (`scripts/annotate_samples.py`, Batch API, $89 for all). Descriptions are
+  a training *target* (`--text-loss W`: assistant text after the prompt, CE on its tokens; the trajectory head still
+  reads the last prompt token), never an input. `ANTHROPIC_API_KEY` lives in `/workspace/.env`.
+- **Running: `ff3_lora4b_dedup`** (started 09:04 UTC 2026-10-06): Qwen3.5-4B-Base, LoRA rank 32 on attention +
+  linear-attention + MLP (`run_ff.sh ... 4b-lora`), dedup set, `--text-loss 0.05`, 6,200 steps (2 epochs), 8.4 s/step,
+  19 GB. **It uses the final frame:** at step 3,000 (1 epoch) success 0.59 / completed 0.65 / collided 0.19 / ADE 0.59 /
+  FDE 0.99 (constant velocity 0.62 / 0.70 / 0.20 / 0.49 / 1.12); swapping the final frame drops success to 0.10 and
+  moves the end point 2.4 m; swapping the prompt 1.2 m. Milestones 1,000-5,000 with evals under
+  `ff3_lora4b_dedup/` on the model repo. Training a 4B here is slowed by the missing `causal_conv1d` wheel (CUDA 13).
 - **Hardware notes:** this machine = 1x H100 NVL 94 GB, 128 CPUs, 377 GB RAM, 32 GB root disk (always short:
   base-model weights go to `HF_HUB_CACHE=/dev/shm/hf_hub`, runs to `/dev/shm/runs`). Throughput: 2B 4.2
   samples/s (5.2 without checkpointing at 90 GB), 4B 1.8 samples/s (needs 8-bit AdamW; `causal_conv1d` has no
   wheel for CUDA 13 here, so Qwen3.5 is slower than it could be). One pass over all 1.11 M frames: 2B about
   3 days, 4B about 7 days on this GPU. **Multi-GPU training is not implemented** (single process; would need
   DDP + rank-sharded streaming in `vla/stream.py`).
-- **Open with the owner:** how to scale (steps, data subset, GPUs; multi-GPU training is not implemented);
-  what to do if the final frame is still unused after a longer run (ideas: drop the past frames some of the time,
-  sample turning moments more often, vary the horizon); Qwen3-VL-2B vs Qwen2.5-VL-3B.
+- **Open with the owner:** whether the gain of ff3 over ff2 comes from the dedup set, the description target or LoRA
+  (one ablation each would tell); how to beat constant velocity on ADE (more epochs, the 1.06 M remaining frames with
+  descriptions, a bigger GPU for the 4B without checkpointing); multi-GPU training is not implemented.
 - **Machine notes:** root disk is 32 GB and nearly full (model caches); run directories and downloads go to
   `/dev/shm`. The flash-attention kernel cannot load from `/dev/shm` (noexec), so `HF_HOME` stays on the root disk.
 
