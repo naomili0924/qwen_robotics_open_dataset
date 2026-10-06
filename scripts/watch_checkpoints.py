@@ -3,7 +3,8 @@
 
 Runs beside vla.train (no restart needed).  For run <run> and model repo <hub_repo> it keeps on the Hub:
 
-* <run name>/step_<N>/ for every N that is a multiple of --every (LoRA, heads, config; no optimiser state);
+* <run name>/step_<N>/ for every N that is a multiple of --every or listed in --milestones (weights, heads,
+  config; no optimiser state);
 * <run name>/best/: the checkpoint with the lowest validation loss so far, with best.json (step, val_loss).
   Validation loss is the run's own held-out loss (log.jsonl), never the evaluation suite;
 * with --suite: suite metrics of every milestone under <run name>/eval/ (reporting only).
@@ -58,7 +59,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", required=True)
     ap.add_argument("--hub-repo", required=True)
-    ap.add_argument("--every", type=int, default=5000)
+    ap.add_argument("--every", type=int, default=5000, help="a milestone every N steps ...")
+    ap.add_argument("--milestones", default="", help="... plus these steps, e.g. 1000,2000,2500 (early checks)")
     ap.add_argument("--suite", nargs="*", default=[], help="suite versions to score at each milestone, e.g. v1 v2")
     ap.add_argument("--suite-data", default="/workspace/cache/suite/suite/{version}/data")
     ap.add_argument("--poll", type=float, default=60)
@@ -81,7 +83,8 @@ def main():
                 snap = snapshot(d, tmp / d.name)
                 if snap is None:
                     continue
-                if step % args.every == 0:
+                extra = {int(x) for x in args.milestones.split(",") if x.strip()}
+                if step % args.every == 0 or step in extra:
                     api.upload_folder(repo_id=args.hub_repo, folder_path=str(snap), path_in_repo=f"{run.name}/{d.name}",
                                       commit_message=f"{run.name}: milestone {d.name}")
                     state["milestones"].append(step)
