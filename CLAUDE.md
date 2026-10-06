@@ -152,7 +152,11 @@ end to end on a sample first, then discuss scale (more GPUs may be rented).
 - RoboSense has no test split (source test labels are withheld); the owner declined re-splitting.
 - SiT: blocked. The download needs the owner to sign the authors' terms form, and the licence statements
   conflict (ND vs SA); confirm with the authors before publishing converted data.
-- SCAND, MuSoHu: no object tracks, so not usable as collision ground truth.
+- MuSoHu (helmet-worn camera + lidar, people walks in malls and campus buildings): converted (`scripts/convert_musohu.py`,
+  people tracked in the lidar), published as `qwen_robotics_open_dataset_musohu`, **reserved for evaluation** (75 of
+  the 132 v3 and 74 of the 134 v2 final-frame scenarios). The owner calls it highly relevant to the task: keep it in
+  every eval version; if it is ever wanted for training, split recordings first so none appears on both sides. Its
+  helmet height is estimated, so the camera prompt says "unknown" for it. SCAND: no object tracks, not converted.
 - Habitat + HSSD point-goal: 113 of 168 houses generated with `scripts/generate_habitat_pointnav.py` and
   published (see the state section). HM3D is now accessible too (token works).
 - HM3D, MP3D (VLN-CE, object-goal), nuScenes: wait for the owner's credentials (instructions were given
