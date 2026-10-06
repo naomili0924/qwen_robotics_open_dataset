@@ -100,6 +100,28 @@ points; the simulated houses (orange) collapse from a dense blob to a thin layer
   carrier goes, what it passes, avoids or waits for, whether it stops or turns), `place`, `interaction`. These
   are hindsight text, meant as an auxiliary training *target*, never as an input (`scripts/annotate_samples.py`).
 
+## Descriptions (`annotations`)
+
+All 49,391 samples were described by Claude Haiku 4.5 through the Batch API (158 M input tokens,
+3.9 M output tokens, about $89). The model saw 11 frames at 1 Hz (5 s before the current frame
+to 5 s after) and the recorded path of the next 5 s as text, and answered with a `description`, a `place` and an
+`interaction` (what the carrier reacts to; "none" for 23% of the samples). Mean length
+34 words. One example per motion class:
+
+- *sharp_left* (egowalk): The carrier walks at a steady slow pace through a furniture showroom, passing display beds and cabinets while bearing left to navigate around a large wardrobe display that occupies the center of the space.
+- *sharp_right* (egowalk): The carrier walks at a slow pace through a shopping mall corridor, passing by a decorative white Christmas tree and a railing on the left, then gradually turns right toward the food court area with the Stardogs restaurant kiosk.
+- *slowing* (egowalk): The carrier walks straight ahead at a slow, steady pace through a wet parking lot in front of apartment buildings, maintaining their course without deviation or interaction with any obstacles or people.
+- *speeding_up* (egowalk): The carrier walks at a steady, slightly increasing pace straight ahead through a shopping mall corridor, passing by store fronts and avoiding scattered pedestrians while maintaining a direct path forward.
+- *standing* (robosense): The carrier moves slowly straight ahead at walking pace along an urban street with storefronts on the right and trees lining the left side, then comes to a stop after traveling a short distance.
+- *starting* (egowalk): The carrier walks at a slow pace across a large open plaza area and then turns sharply left toward the building structures along the left side. The movement suggests the carrier is navigating through an outdoor commercial or transportation hub and redirecting toward the storefronts and covered areas visible on the left.
+- *stopping* (egowalk): The carrier walks at a slow pace through an interior space, then stops and turns around to the left, likely reacting to reaching a destination or realizing a need to change direction in the hallway or entryway.
+- *straight* (egowalk): The carrier walks straight ahead at a steady walking pace along a paved pathway beside a green fence in an urban nighttime setting, passing by street lights and commercial signage on the left side.
+- *turn_left* (egowalk): The carrier walks at a slow pace through a flower shop, bearing slightly left while exiting through the glass doors toward the street outside. The carrier navigates around a metal basket display stand and heads toward the entrance, ultimately passing through the doors to reach the exterior.
+- *turn_right* (egowalk): The pedestrian walks at a steady pace across a wide urban plaza, gradually bearing right to navigate around parked vehicles while maintaining forward progress through the open square.
+- *weaving* (egowalk): The carrier walks slowly and steadily straight ahead through a furniture showroom, passing by display counters and store fixtures while maintaining a consistent pace in the open floor space.
+
+The text is hindsight (it knows what happened), so it is a training *target* (`--text-loss`), never an input.
+
 ## Use
 
 ```bash
