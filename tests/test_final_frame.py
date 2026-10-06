@@ -103,3 +103,22 @@ def test_camera_sentence_uses_stored_calibration_only_and_says_unknown_otherwise
     assert camera_prompt({}) == "The camera's field of view is unknown; its height above the ground is unknown."
     assert camera_prompt(cam) in embodiment_prompt("person_walking", camera=cam)
     assert "field of view" not in embodiment_prompt("person_walking")
+
+
+def test_instruction_policy_items_have_no_final_image_and_carry_the_task_text():
+    import numpy as np
+    from PIL import Image
+    from vla.config import Config
+    from vla.data import INSTRUCTION_SYSTEM, final_frame_item, instruction_text
+    ann = dict(description="The carrier walks to the glass door ahead and stops.", place="Office lobby", interaction="a person crossing")
+    text = instruction_text(ann, "description,place,interaction")
+    assert text == "Task: The carrier walks to the glass door ahead and stops. Place: Office lobby. Reacts to: a person crossing."
+    assert instruction_text(ann, "description") == "Task: The carrier walks to the glass door ahead and stops."
+    assert instruction_text(None, "description") == ""
+    cfg = Config(frames=7, horizon=10, horizon_s=5.0, past_dt_s=1.0, final_image=False, instruction="description")
+    imgs = [Image.new("RGB", (64, 48)) for _ in range(6)]
+    it = final_frame_item(imgs, None, "prompt " + text, cfg)
+    assert len(it["images"]) == 6 and it["image_tags"][-1] == "View now:" and "View in" not in " ".join(it["image_tags"])
+    assert it["system"] == INSTRUCTION_SYSTEM.format(h=5.0, n=10) and "Task:" in it["prompt"]
+    with_final = final_frame_item(imgs, Image.new("RGB", (64, 48)), "prompt", Config(frames=7, horizon=10, horizon_s=5.0, past_dt_s=1.0))
+    assert len(with_final["images"]) == 7 and with_final["image_tags"][-1] == "View in 5 s:"
