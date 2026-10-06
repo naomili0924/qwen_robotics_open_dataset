@@ -9,16 +9,20 @@ recorded future, given as text or coordinates, is not read by the model
 A pretraining stage that teaches how what the camera sees relates to how the camera moves. It is not the
 onboard model: at deployment nobody has the future frame.
 
-- **Input:** 5 past frames 1 s apart, the current frame, and **one final frame 5 s ahead** (7 images), plus one
-  sentence: "You are a human walking." or "You are a robot." Nothing numeric: no past positions, no speed,
-  no goal coordinates.
+- **Input:** 5 past frames 1 s apart, the current frame, and **one final frame 5 s ahead** (7 images), plus an
+  embodiment prompt in the style of Qwen-VLA (arXiv 2605.30280, section 2.3): "The camera is carried by a human
+  walking. The past views are sampled at 1 Hz. Please predict the next 10 positions at 2 Hz." (or "by a robot").
+  No task or instruction, nothing numeric: no past positions, no speed, no goal coordinates.
 - **Output:** 10 positions (x forward, y left, metres, relative to now), one every 0.5 s: the recorded motion,
   timing included, so slowing for people is part of the target.
 - **Embodiment:** EgoWalk = human; CODa, RoboSense, HSSD = robot. In the evaluation set MuSoHu = human.
 - **Samples are cut at load time** (`hnod/windows.py`, `mode="final_frame"`); nothing new is stored. Every frame
   followed by 5 s of recording is a sample. Point-goal and language prompts are not used in this stage.
-- **Model:** the language model is fully fine-tuned, the vision encoder is frozen. Qwen3-VL-2B for fast
-  iteration (`Qwen/Qwen2.5-VL-3B-Instruct` also works).
+- **Model:** `Qwen/Qwen3.5-4B-Base` (the Qwen-VLA backbone family, Apache-2.0), language model fully
+  fine-tuned, vision encoder frozen, action head the existing MLP regression head. On one 94 GB H100 that needs
+  gradient checkpointing and 8-bit AdamW (`--optimizer adamw8bit`): about 44 GB and 1.8 samples/s with the
+  `flash-linear-attention` kernels installed (`causal_conv1d` has no wheel for CUDA 13 here; with it the model
+  would be faster). Qwen3-VL-2B-Instruct runs at 5.9 samples/s and was used for the first pipeline test.
 
 ## Commands
 

@@ -58,7 +58,7 @@ def build_items(rows, cfg, final="true", prompt="true"):
         emb = r["embodiment"]
         if prompt == "swapped":
             emb = "wheeled_robot" if emb == "person_walking" else "person_walking"
-        items.append(final_frame_item(past, fin, embodiment_prompt(emb), cfg, index=i, scenario_id=r["suite_id"]))
+        items.append(final_frame_item(past, fin, embodiment_prompt(emb, cfg.past_dt_s, cfg.horizon, cfg.horizon_s), cfg, index=i, scenario_id=r["suite_id"]))
     return items
 
 

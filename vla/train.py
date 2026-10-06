@@ -144,7 +144,11 @@ def train(cfg: Config, model=None, train_ds=None, val_rows=None):
     groups = [{"params": head_params, "lr": cfg.lr_head}]
     if backbone_params:
         groups.append({"params": backbone_params, "lr": cfg.lr_backbone})
-    opt = torch.optim.AdamW(groups, weight_decay=cfg.weight_decay, betas=(0.9, 0.95))
+    if cfg.optimizer == "adamw8bit":
+        import bitsandbytes as bnb
+        opt = bnb.optim.AdamW8bit(groups, weight_decay=cfg.weight_decay, betas=(0.9, 0.95))
+    else:
+        opt = torch.optim.AdamW(groups, weight_decay=cfg.weight_decay, betas=(0.9, 0.95))
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: lr_at(s, cfg))
     step = 0
     resume = hub.resolve_resume(cfg)

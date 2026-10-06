@@ -196,7 +196,8 @@ class NavigationPipeline:
         from vla.data import final_frame_item
         from hnod.windows import embodiment_prompt
         assert self.cfg.window_mode == "final_frame", "this checkpoint is not a final-frame policy"
-        prompt = embodiment_prompt("person_walking" if embodiment.startswith(("human", "person")) else "wheeled_robot")
+        prompt = embodiment_prompt("person_walking" if embodiment.startswith(("human", "person")) else "wheeled_robot",
+                                   self.cfg.past_dt_s, self.cfg.horizon, self.cfg.horizon_s)
         self.model.eval()
         batch = to_device(self.collate([final_frame_item(images, final_image, prompt, self.cfg)]), self.model.device)
         return self.model.predict(batch)["trajectory"][0, :, :2].float().cpu().numpy()

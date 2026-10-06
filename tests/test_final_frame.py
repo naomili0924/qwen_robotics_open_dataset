@@ -36,7 +36,9 @@ def test_targets_are_spaced_in_time_so_speed_is_part_of_the_answer():
     robot = next(w.sample(k) for k in range(len(w)) if w.sample(k)["episode_id"] == "robot")
     assert np.allclose(human["target"][:, 0], 1.2 * 0.5 * np.arange(1, 11), atol=1e-5)
     assert np.allclose(robot["target"][:, 0], 0.5 * 0.5 * np.arange(1, 11), atol=1e-5)
-    assert human["prompt"] == "You are a human walking." and robot["prompt"] == "You are a robot."
+    assert human["prompt"] == ("The camera is carried by a human walking. The past views are sampled at 1 Hz. "
+                               "Please predict the next 10 positions at 2 Hz.")
+    assert robot["prompt"].startswith("The camera is carried by a robot.")
 
 
 def test_only_frames_with_a_full_horizon_are_samples_and_the_final_frame_is_5_s_ahead():
@@ -67,7 +69,7 @@ def test_item_has_no_numbers_only_images_and_embodiment():
     w = FrameWindows(Dataset.from_list(r, features=fr.FRAME_FEATURES), Dataset.from_list([e], features=fr.EPISODE_FEATURES), wc)
     item = FrameNavDataset([w], cfg)[0]
     assert len(item["images"]) == 7 and len(item["image_tags"]) == 7 and item["image_tags"][-1] == "View in 5 s:"
-    assert item["prompt"] == "You are a robot." and not item["kin"].any()
+    assert item["prompt"].startswith("The camera is carried by a robot.") and not item["kin"].any()
     assert item["target"].shape == (10, 2) and "(" not in item["prompt"]
 
 

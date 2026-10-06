@@ -267,6 +267,18 @@ class Collator:
         processor.image_processor.min_pixels = cfg.min_pixels
         processor.tokenizer.padding_side = "right"  # the last real token of each row is found via the mask
 
+    def render(self, messages):
+        """Chat-template text; a base model without a template gets the same turns written out by hand
+        (Qwen's <|im_start|> format, images as <|vision_start|><|image_pad|><|vision_end|>)."""
+        if getattr(self.processor, "chat_template", None):
+            return self.processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+        tok = getattr(self.processor, "image_token", "<|image_pad|>")
+        out = []
+        for m in messages:
+            body = "".join(f"<|vision_start|>{tok}<|vision_end|>" if c["type"] == "image" else c["text"] for c in m["content"])
+            out.append(f"<|im_start|>{m['role']}\n{body}<|im_end|>\n")
+        return "".join(out) + "<|im_start|>assistant\n"
+
     def __call__(self, items):
         texts, images = [], []
         for it in items:
@@ -275,7 +287,7 @@ class Collator:
                 [part for tag in tags for part in ({"type": "text", "text": tag}, {"type": "image"})]
             messages = [{"role": "system", "content": [{"type": "text", "text": it.get("system", SYSTEM_PROMPT)}]},
                         {"role": "user", "content": [*views, {"type": "text", "text": it["prompt"]}]}]
-            texts.append(self.processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=False))
+            texts.append(self.render(messages))
             images += it["images"]
         batch = dict(self.processor(text=texts, images=images, padding=True, return_tensors="pt"))
         batch["target"] = torch.from_numpy(np.stack([it["target"] for it in items]))

@@ -78,6 +78,7 @@ class Config:
     lr_head: float = 3e-4
     lr_backbone: float = 1e-4           # LoRA; use ~2e-5 for full fine-tuning
     weight_decay: float = 0.01
+    optimizer: str = "adamw"            # adamw | adamw8bit (bitsandbytes; the Adam state of a full fine-tune in 2 bytes/param)
     warmup: int = 100
     clip_grad: float = 1.0
     seed: int = 0

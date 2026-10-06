@@ -47,12 +47,17 @@ class WindowConfig:
     horizon_s: float = 5.0
 
 
-EMBODIMENT_PROMPTS = {"person_walking": "You are a human walking.", "wheeled_robot": "You are a robot.",
-                      "legged_robot": "You are a robot.", "simulated_agent": "You are a robot."}
+EMBODIMENT_TAGS = {"person_walking": "a human walking", "wheeled_robot": "a robot", "legged_robot": "a robot",
+                   "simulated_agent": "a robot"}
+# In the style of Qwen-VLA's embodiment-aware prompt (arXiv 2605.30280, section 2.3): who carries the camera, the
+# rate of the observations and the rate and number of predicted positions.  No task or instruction at this stage.
+EMBODIMENT_TEMPLATE = ("The camera is carried by {tag}. The past views are sampled at {past_hz:g} Hz. "
+                       "Please predict the next {n} positions at {out_hz:g} Hz.")
 
 
-def embodiment_prompt(embodiment):
-    return EMBODIMENT_PROMPTS.get(embodiment, "You are a robot.")
+def embodiment_prompt(embodiment, past_dt_s=1.0, n=10, horizon_s=5.0):
+    return EMBODIMENT_TEMPLATE.format(tag=EMBODIMENT_TAGS.get(embodiment, "a robot"), past_hz=1.0 / past_dt_s, n=n,
+                                      out_hz=n / horizon_s)
 
 
 def _wrap(a):
@@ -216,7 +221,8 @@ class FrameWindows:
         embodiment = ep.get("embodiment", "") or ""
         return dict(row=i, episode_id=str(self.ep_ids[e]), frame_index=int(i - a), history_rows=rows,
                     final_row=j, final_dt_s=float(self.t[j] - t0), target=np.c_[wxy, wyaw].astype(np.float32),
-                    embodiment=embodiment, prompt=embodiment_prompt(embodiment), task="final_frame",
+                    embodiment=embodiment, task="final_frame",
+                    prompt=embodiment_prompt(embodiment, c.past_dt_s, c.n_waypoints, c.horizon_s),
                     dataset=ep.get("dataset", ""), rate_hz=float(ep.get("rate_hz", 0) or 0))
 
     def images(self, rows, column="image"):

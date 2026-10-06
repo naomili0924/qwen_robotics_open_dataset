@@ -1,6 +1,7 @@
 #!/bin/bash
 # Final-frame pretraining: (past frames + the frame 5 s ahead) -> the recorded positions in between.
-# Inputs are images and "You are a human walking." / "You are a robot." only; the language model is fully fine-tuned.
+# Inputs are images and an embodiment prompt only (who carries the camera, frame rates); the language model
+# (Qwen3.5-4B-Base, as in Qwen-VLA) is fully fine-tuned with gradient checkpointing and 8-bit AdamW.
 #   bash scripts/run_ff.sh <run name> <steps> [extra vla.train flags]
 # Resumes from /dev/shm/runs/<run name>/last, or from the Hub copy on a new machine.
 set -u
@@ -10,8 +11,8 @@ RUN=${1:?run name}; STEPS=${2:?steps}; shift 2
 for attempt in 1 2 3 4 5; do
   /venv/main/bin/python -m vla.train --run /dev/shm/runs/$RUN --resume auto \
     --hub-repo Jinyan0924/qwen_robotics_nav_policy \
-    --backbone Qwen/Qwen3-VL-2B-Instruct --backbone-mode full --no-tune-vision --no-gradient-checkpointing \
-    --attn-implementation kernels-community/flash-attn3 \
+    --backbone Qwen/Qwen3.5-4B-Base --backbone-mode full --no-tune-vision --gradient-checkpointing \
+    --optimizer adamw8bit \
     --data-format frames --window-mode final_frame --stream --frames-repos $TRAIN_REPOS --frames-mix sqrt \
     --frames 7 --past-dt-s 1.0 --horizon 10 --horizon-s 5.0 --max-pixels 112896 \
     --no-kinematic-input --no-ego-history \
