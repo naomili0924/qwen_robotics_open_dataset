@@ -34,6 +34,20 @@ def push_checkpoint(run, hub_repo, private=True):
         return False
 
 
+def resolve_init(init_from, cache="/dev/shm/nav_policy_checkpoints"):
+    """A local checkpoint directory for cfg.init_from: a path, or "hub:<repo>/<run>/<folder>" (e.g.
+    hub:Jinyan0924/qwen_robotics_nav_policy/ff3_lora4b_dedup/step_4000), fetched from the Hub."""
+    if not init_from.startswith("hub:"):
+        return init_from
+    from huggingface_hub import snapshot_download
+    user, name, *folder = init_from[4:].split("/")
+    repo, folder = f"{user}/{name}", "/".join(folder)
+    local = snapshot_download(repo, repo_type="model", token=os.environ.get("HF_TOKEN"), allow_patterns=[f"{folder}/*"],
+                              local_dir=str(Path(cache) / repo.replace("/", "__") / "main"))
+    print(f"initialising from {repo}/{folder}", flush=True)
+    return str(Path(local) / folder)
+
+
 def resolve_resume(cfg):
     """Checkpoint directory for cfg.resume ("" none, "auto", or a path); fetches from the Hub if needed."""
     if cfg.resume != "auto":

@@ -135,6 +135,7 @@ def train(cfg: Config, model=None, train_ds=None, val_rows=None):
     print(f"action scale {cfg.action_scale:.2f} m", flush=True)
 
     if model is None:
+        cfg.init_from = hub.resolve_init(cfg.init_from)  # a Hub checkpoint ("hub:<repo>/<run>/<folder>") or a path
         model = NavPolicy(cfg)
     print(model.describe(), flush=True)
     collate = Collator(model.processor, cfg)

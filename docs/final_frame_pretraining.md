@@ -76,3 +76,37 @@ Training loss 0.10 -> 0.02, validation 0.029 -> 0.026. Checkpoint (3.4 GB) uploa
 The pipeline works end to end. The model does not use the final frame yet: changing it moves the predicted end
 point by 0.05-0.07 m (the sentence: 0.41 m). 8,000 samples is far too few to judge, but this check is the one to
 watch in any longer run.
+
+
+## Reusing the final-frame checkpoint (state on 2026-10-06)
+
+The best final-frame model so far is run **`ff3_lora4b_dedup`**: `Qwen/Qwen3.5-4B-Base`, LoRA rank 32 on the language
+model (attention, linear attention, MLPs), trained on the 49,391-sample dedup set with the Claude descriptions as an
+auxiliary text target (`--text-loss 0.05`). Stopped by the owner at step 4,325; the last saved and best checkpoint is
+step 4,000 (`ff3_lora4b_dedup/step_4000` = `best` = `last` on `Jinyan0924/qwen_robotics_nav_policy`). On
+`v3_final_frame`: success 0.43, completed 0.54, collided 0.27, ADE 0.70 m, FDE 1.25 m (constant velocity 0.33 / 0.38 /
+0.24 / 0.84 / 1.92); swapping the final frame moves the predicted end point 2.6 m.
+
+Three ways to pick it up:
+
+```bash
+# 1. continue the same run (optimizer state included; resumes from <run>/last on the Hub if the machine is new)
+bash scripts/run_ff.sh ff3_lora4b_dedup 6200 4b-lora --text-loss 0.05 \
+  --frames-repos Jinyan0924/qwen_robotics_nav_pretrain_dedup --val-frames-repos "$TRAIN_REPOS"
+
+# 2. start a new run from its weights (fresh optimizer; change data, prompt or losses freely), e.g. with the
+#    camera sentence and a different data mix
+bash scripts/run_ff.sh ff4_<name> 3000 4b-lora --text-loss 0.05 --camera-prompt \
+  --init-from hub:Jinyan0924/qwen_robotics_nav_policy/ff3_lora4b_dedup/step_4000 \
+  --frames-repos Jinyan0924/qwen_robotics_nav_pretrain_dedup --val-frames-repos "$TRAIN_REPOS"
+
+# 3. evaluate or run inference
+python -m vla.eval_final_frame --hub-repo Jinyan0924/qwen_robotics_nav_policy --checkpoint ff3_lora4b_dedup/step_4000 \
+  --version v3_final_frame --data /dev/shm/final_frame_eval/v3_final_frame --out eval.json
+python -c "from vla.pipeline import NavigationPipeline as P; p = P.from_hub('Jinyan0924/qwen_robotics_nav_policy', 'ff3_lora4b_dedup/step_4000')"
+```
+
+A model trained with `--camera-prompt` reads the camera sentence (`hnod.windows.camera_prompt`): field of view from the
+stored intrinsics and the height above the ground when its source is the dataset's calibration or a simulator;
+otherwise "unknown". Never pass estimated values at inference. The watcher (`scripts/watch_checkpoints.py --suite
+v2_final_frame v3_final_frame`) uploads milestones and scores them on both suites.

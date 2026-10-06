@@ -106,12 +106,20 @@ end to end on a sample first, then discuss scale (more GPUs may be rented).
   frames (-5 s..+5 s) + the recorded path (`scripts/annotate_samples.py`, Batch API, $89 for all). Descriptions are
   a training *target* (`--text-loss W`: assistant text after the prompt, CE on its tokens; the trajectory head still
   reads the last prompt token), never an input. `ANTHROPIC_API_KEY` lives in `/workspace/.env`.
-- **Running: `ff3_lora4b_dedup`** (started 09:04 UTC 2026-10-06): Qwen3.5-4B-Base, LoRA rank 32 on attention +
+- **Stopped by the owner at step 4,325 (19:45 UTC): `ff3_lora4b_dedup`** (started 09:04 UTC 2026-10-06): Qwen3.5-4B-Base, LoRA rank 32 on attention +
   linear-attention + MLP (`run_ff.sh ... 4b-lora`), dedup set, `--text-loss 0.05`, 6,200 steps (2 epochs), 8.4 s/step,
   19 GB. **It uses the final frame:** at step 3,000 (1 epoch) success 0.59 / completed 0.65 / collided 0.19 / ADE 0.59 /
   FDE 0.99 (constant velocity 0.62 / 0.70 / 0.20 / 0.49 / 1.12); swapping the final frame drops success to 0.10 and
   moves the end point 2.4 m; swapping the prompt 1.2 m. Milestones 1,000-5,000 with evals under
-  `ff3_lora4b_dedup/` on the model repo. Training a 4B here is slowed by the missing `causal_conv1d` wheel (CUDA 13).
+  `ff3_lora4b_dedup/` on the model repo; `step_4000` = `best` = `last`. Training a 4B here is slowed by the missing
+  `causal_conv1d` wheel (CUDA 13). How to resume, start from its weights (`--init-from hub:...`) or evaluate:
+  `docs/final_frame_pretraining.md`, "Reusing the final-frame checkpoint".
+- **Camera calibration in the prompt (owner, 2026-10-06):** `--camera-prompt` adds the field of view (from K) and the
+  height above the ground to the embodiment sentence, **from stored calibration only**; an estimated or missing value is
+  written as "unknown" (MuSoHu's helmet height was estimated from the lidar and is therefore unknown to the model).
+  Tables carry `camera.height_source` (episodes), `camera_prompt` (dedup samples, final-frame eval configs). Not yet used
+  by a trained run. Next planned run (ff4, not started): from ff3's weights, `--camera-prompt`, plus instruction
+  conditioning (descriptions rewritten into motion-free instructions) mixed with the final frame.
 - **Eval v3 (2026-10-06):** `v3_final_frame` = 132 motion-diverse real scenarios (`scripts/build_eval_v3.py`,
   `docs/eval_audit_v3.json`); v2 was two thirds straight. Constant velocity on v3: success 0.33, ADE 0.84, FDE 1.92.
   ff3 at step 3,500 on v3: success 0.41, completed 0.42, collided 0.24, ADE 0.75, FDE 1.32 - the first run that beats

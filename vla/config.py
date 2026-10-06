@@ -63,7 +63,8 @@ class Config:
     text_loss: float = 0.0              # weight of the language loss on a sample's description (data/annotations of a
                                         # frames repo), written after the prompt as the assistant's text; 0 = off
     kinematic_input: bool = True        # feed past positions / speed / goal to the heads as numbers, not only as prompt text
-    init_from: str = ""                 # load weights (adapters + heads) from this checkpoint, start a fresh optimiser
+    init_from: str = ""                 # load weights (adapters + heads) from this checkpoint, start a fresh optimiser;
+                                        # a path or hub:<repo>/<run>/<folder> (vla.hub.resolve_init)
     freeze_backbone: bool = False       # after loading: train heads only (transfer test of a learnt embedding)
     # --- reinforcement learning (vla.rl)
     algo: str = "grpo"                  # grpo | ppo
