@@ -46,6 +46,18 @@ def with_source(cam, dataset):
     return cam
 
 
+def upload(api, kw):
+    """upload_folder with a wait on the Hub's 429 (commit rate limit)."""
+    for attempt in range(6):
+        try:
+            return api.upload_folder(**kw)
+        except Exception as e:  # noqa: BLE001
+            if "429" not in str(e) or attempt == 5:
+                raise
+            print(f"rate limited, waiting {5 * 2 ** attempt} min", flush=True)
+            time.sleep(300 * 2 ** attempt)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--work", default="/dev/shm/camera_prov")
@@ -56,18 +68,25 @@ def main():
     cameras = {}  # (repo, episode_id) -> camera dict with provenance
     for repo in EPISODE_REPOS:
         files = [f for f in api.list_repo_files(repo, repo_type="dataset") if f.startswith("data/episodes/")]
+        folder = work / repo.split("/")[1]
+        src = {}
         for f in files:
-            local = hf_hub_download(repo, f, repo_type="dataset", local_dir=work / repo.split("/")[1])
+            local = hf_hub_download(repo, f, repo_type="dataset", local_dir=folder)
             rows = pq.read_table(local).to_pylist()
+            if all("height_source" in r["camera"] for r in rows):  # already done (a rerun after a rate limit)
+                for r in rows:
+                    cameras[(repo, r["episode_id"])] = r["camera"]
+                continue
             for r in rows:
                 r["camera"] = with_source(r["camera"], r["dataset"])
                 cameras[(repo, r["episode_id"])] = r["camera"]
             Dataset.from_list(rows, features=EPISODE_FEATURES).to_parquet(local)
-            src = pd.Series([r["camera"]["height_source"] for r in rows]).value_counts().to_dict()
-            print(f"{repo.split('/')[1]} {Path(f).name}: {len(rows)} episodes, height_source {src}", flush=True)
-            if args.upload:
-                api.upload_file(path_or_fileobj=local, path_in_repo=f, repo_id=repo, repo_type="dataset",
-                                commit_message="episodes: camera.height_source (dataset | simulator | unknown)")
+            for r in rows:
+                src[r["camera"]["height_source"]] = src.get(r["camera"]["height_source"], 0) + 1
+        print(f"{repo.split('/')[1]}: {len(files)} episode files, height_source {src}", flush=True)
+        if args.upload and src:  # one commit per repo (per-file commits hit the Hub's rate limit)
+            upload(api, dict(repo_id=repo, repo_type="dataset", folder_path=str(folder / "data" / "episodes"), path_in_repo="data/episodes",
+                             commit_message="episodes: camera.height_source (dataset | simulator | unknown)"))
     # dedup samples: the camera sentence per sample
     repo = EPISODE_REPOS[0]
     f = "data/samples/train-00000.parquet"
@@ -81,8 +100,8 @@ def main():
     Dataset.from_pandas(df, features=feats, preserve_index=False).to_parquet(local)
     print("samples camera_prompt:", df["camera_prompt"].value_counts().to_dict())
     if args.upload:
-        api.upload_file(path_or_fileobj=local, path_in_repo=f, repo_id=repo, repo_type="dataset",
-                        commit_message="samples: camera_prompt (field of view and height from the stored calibration)")
+        upload(api, dict(repo_id=repo, repo_type="dataset", folder_path=str(Path(local).parent), path_in_repo="data/samples",
+                         commit_message="samples: camera_prompt (field of view and height from the stored calibration)"))
     # eval final-frame configs
     for version, root in (("v3", "/dev/shm/final_frame_eval"), ("v2", "/dev/shm/final_frame_eval_v2")):
         src_dir = Path(root) / f"{version}_final_frame"
@@ -107,8 +126,8 @@ def main():
         shutil.rmtree(old, ignore_errors=True)
         print(f"{version}_final_frame: {len(files)} files; by source:", counts, flush=True)
         if args.upload:
-            api.upload_folder(repo_id="Jinyan0924/qwen_robotics_nav_eval", repo_type="dataset", folder_path=str(src_dir),
-                              path_in_repo=f"data/{version}_final_frame", commit_message=f"{version}_final_frame: camera calibration columns")
+            upload(api, dict(repo_id="Jinyan0924/qwen_robotics_nav_eval", repo_type="dataset", folder_path=str(src_dir),
+                             path_in_repo=f"data/{version}_final_frame", commit_message=f"{version}_final_frame: camera calibration columns"))
     # the watcher's copy of v2 (built before future_images existed) gets the new table too
     live = Path("/dev/shm/final_frame_eval/v2_final_frame")
     if str(live) != "/dev/shm/final_frame_eval_v2/v2_final_frame":
