@@ -94,7 +94,19 @@ end to end on a sample first, then discuss scale (more GPUs may be rented).
   recorded 100%). **Input-use checks: swapping or removing the final frame moves the predicted end point by only
   0.05-0.07 m; swapping the human / robot sentence moves it 0.41 m.** After 8,000 samples the model does not yet
   use the final frame. Numbers: `/workspace/runs/eval/ff0_step500.json` (also on the model repo under `ff0_e2e_test/eval/`).
-- **Not started:** any long run. The owner decides scale after seeing the test.
+- **Backbone decision (owner, 2026-10-06):** start with Qwen3.5-2B-Base, move to Qwen3.5-4B-Base (the Qwen-VLA
+  backbone) once the 2B shows it learns; the owner may rent a bigger GPU for the 4B. `scripts/run_ff.sh <run>
+  <steps> 2b|4b`. Prompt is Qwen-VLA style: who carries the camera + frame rates, no task.
+- **Running / last run: `ff2_qwen35_2b`** (started 2026-10-06 01:25 UTC, 5,000 steps x 16, about 6 h on one
+  H100 NVL at 4.1 s/step, 39 GB). Milestones uploaded at steps 1,000, 2,000, 2,500, 5,000 with evaluations
+  (`scripts/watch_checkpoints.py --milestones`); `last/` every 500 steps. Watch the "swapped final frame"
+  check in each milestone's eval: if the prediction does not move, the final frame is not being used.
+- **Hardware notes:** this machine = 1x H100 NVL 94 GB, 128 CPUs, 377 GB RAM, 32 GB root disk (always short:
+  base-model weights go to `HF_HUB_CACHE=/dev/shm/hf_hub`, runs to `/dev/shm/runs`). Throughput: 2B 4.2
+  samples/s (5.2 without checkpointing at 90 GB), 4B 1.8 samples/s (needs 8-bit AdamW; `causal_conv1d` has no
+  wheel for CUDA 13 here, so Qwen3.5 is slower than it could be). One pass over all 1.11 M frames: 2B about
+  3 days, 4B about 7 days on this GPU. **Multi-GPU training is not implemented** (single process; would need
+  DDP + rank-sharded streaming in `vla/stream.py`).
 - **Open with the owner:** how to scale (steps, data subset, GPUs; multi-GPU training is not implemented);
   what to do if the final frame is still unused after a longer run (ideas: drop the past frames some of the time,
   sample turning moments more often, vary the horizon); Qwen3-VL-2B vs Qwen2.5-VL-3B.
