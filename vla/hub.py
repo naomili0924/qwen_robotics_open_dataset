@@ -20,8 +20,10 @@ def push_checkpoint(run, hub_repo, private=True):
     try:
         api = _api()
         api.create_repo(hub_repo, repo_type="model", private=private, exist_ok=True)
+        big = (run / "last" / "trainer.pt").exists() and (run / "last" / "trainer.pt").stat().st_size > 2e9
         api.upload_folder(repo_id=hub_repo, repo_type="model", folder_path=str(run / "last"),
-                          path_in_repo=f"{run.name}/last", commit_message=f"{run.name}: checkpoint")
+                          path_in_repo=f"{run.name}/last", commit_message=f"{run.name}: checkpoint",
+                          ignore_patterns=["trainer.pt"] if big else None)  # full fine-tune: Adam state is tens of GB
         for name in ("log.jsonl", "config.json"):
             if (run / name).exists():
                 api.upload_file(repo_id=hub_repo, repo_type="model", path_or_fileobj=str(run / name),
@@ -32,19 +34,33 @@ def push_checkpoint(run, hub_repo, private=True):
         return False
 
 
+def resolve_init(init_from, cache="/dev/shm/nav_policy_checkpoints"):
+    """A local checkpoint directory for cfg.init_from: a path, or "hub:<repo>/<run>/<folder>" (e.g.
+    hub:Jinyan0924/qwen_robotics_nav_policy/ff3_lora4b_dedup/step_4000), fetched from the Hub."""
+    if not init_from.startswith("hub:"):
+        return init_from
+    from huggingface_hub import snapshot_download
+    user, name, *folder = init_from[4:].split("/")
+    repo, folder = f"{user}/{name}", "/".join(folder)
+    local = snapshot_download(repo, repo_type="model", token=os.environ.get("HF_TOKEN"), allow_patterns=[f"{folder}/*"],
+                              local_dir=str(Path(cache) / repo.replace("/", "__") / "main"))
+    print(f"initialising from {repo}/{folder}", flush=True)
+    return str(Path(local) / folder)
+
+
 def resolve_resume(cfg):
     """Checkpoint directory for cfg.resume ("" none, "auto", or a path); fetches from the Hub if needed."""
     if cfg.resume != "auto":
         return cfg.resume
     run = Path(cfg.run)
-    if (run / "last" / "trainer.pt").exists():
+    if (run / "last" / "step.json").exists() or (run / "last" / "trainer.pt").exists():
         return str(run / "last")
     if cfg.hub_repo:
         try:
             from huggingface_hub import snapshot_download
             snapshot_download(cfg.hub_repo, repo_type="model", token=os.environ.get("HF_TOKEN"), local_dir=str(run.parent),
                               allow_patterns=[f"{run.name}/last/*", f"{run.name}/last/**", f"{run.name}/log.jsonl"])
-            if (run / "last" / "trainer.pt").exists():
+            if (run / "last" / "step.json").exists() or (run / "last" / "trainer.pt").exists():
                 print(f"fetched {run.name}/last from {cfg.hub_repo}", flush=True)
                 return str(run / "last")
         except Exception as e:
@@ -58,7 +74,11 @@ def save_last(run, name, hub_repo):
     if name != "last":
         tmp = run / "last.tmp"
         shutil.rmtree(tmp, ignore_errors=True)
-        shutil.copytree(run / name, tmp)
+        try:  # hard links: <run>/last and <run>/step_N share their files (no second copy of the Adam state)
+            shutil.copytree(run / name, tmp, copy_function=os.link)
+        except OSError:
+            shutil.rmtree(tmp, ignore_errors=True)
+            shutil.copytree(run / name, tmp)
         shutil.rmtree(run / "last", ignore_errors=True)
         tmp.rename(run / "last")
     if hub_repo:

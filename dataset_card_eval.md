@@ -19,6 +19,26 @@ configs:
   data_files:
   - split: test
     path: data/v2/test-*.parquet
+- config_name: v2_final_frame
+  data_files:
+  - split: test
+    path: data/v2_final_frame/test-*.parquet
+- config_name: v3
+  data_files:
+  - split: test
+    path: data/v3/test-*.parquet
+- config_name: v3_final_frame
+  data_files:
+  - split: test
+    path: data/v3_final_frame/test-*.parquet
+- config_name: v2_annotations
+  data_files:
+  - split: test
+    path: data/v2_annotations/test-*.parquet
+- config_name: v3_annotations
+  data_files:
+  - split: test
+    path: data/v3_annotations/test-*.parquet
 - config_name: v1
   data_files:
   - split: test
@@ -46,10 +66,51 @@ path (green), the goal of the prompt (star) and the naive baselines (dashed).*
 |---|---|---|---|
 | `v2` (default) | 100 real: 75 MuSoHu walks (mall, university buildings), 17 JRDB, 8 CODa | 50 real | all scenarios real recordings with people |
 | `v1` | 25 real (CODa, JRDB) + 75 simulated HSSD houses without people | 50 real | the same 50 outdoor and 25 real indoor scenarios as v2 |
+| `v3` | 95 real (MuSoHu, JRDB, CODa) | 49 real | **motion-diverse**: a quota per motion class (turns, stops, starts, slowing, speeding up, weaving); not audited by eye |
 
 v2 is easier for naive planners than v1: walking straight to the goal succeeds in 69% of v2's indoor scenarios and
 20% of v1's, because real indoor walks are mostly corridors and halls with a clear line of sight, while the simulated
 houses force turns through doorways. Report both versions while v2 is the only all-real indoor set.
+
+`v2_final_frame` is suite v2 for the **final-frame task**: 134 of the 150 scenarios, each with the camera frame
+at the end of its horizon (`final_image`), the recorder's `embodiment`, and where the recording ended (`final_xy`).
+The model sees past frames and that final frame and must reproduce the recorded motion in between; it is scored
+at the recorded timing for collision, completion (end within 1 m) and smoothness (`python -m vla.eval_final_frame`).
+16 scenarios whose recording stops before the end image exists are left out (`missing.json`).
+
+### v3: motion diversity
+
+v2 is two thirds "keep walking straight" (89 of its 134 final-frame scenarios), which is why constant velocity is a
+strong baseline on it. `v3` (144 scenarios, `v3_final_frame` 132 with the end image) fills a quota per
+motion class instead, using the same rule that balanced the training set (`scripts/build_eval_v3.py`, method and
+selection in `docs/eval_audit_v3.json`):
+
+| motion class (recorded path over the horizon) | v3_final_frame | v2_final_frame |
+|---|---|---|
+| straight | 29 | 89 |
+| gentle turn left / right (end point 15-45 deg off) | 15 / 15 | 12 / 12 |
+| sharp turn left / right (more than 45 deg) | 13 / 13 | 3 / 4 |
+| slowing / stopping | 12 / 8 | 3 / 0 |
+| speeding up / starting | 10 / 7 | 10 / 0 |
+| weaving (path 15% longer than the straight line) | 7 | 1 |
+| standing | 3 | 0 |
+
+Two rules differ from v2, both documented per scenario in `tags`: the reference path no longer has to lie over
+lidar-observed map cells (that rule removed most turns and stops, because the cells beside and under the sensor are
+never observed; `map:partly_unknown` marks the affected scenarios, whose map-collision score is less reliable), and
+unreviewed scenarios take CLIP's environment label when it is confident (`env:by_clip`). v3 was not audited by eye.
+
+Both final-frame configs also hold `future_images`, the camera views at 1 Hz between now and the final frame.
+
+On `v3_final_frame` the constant-velocity baseline reaches success 0.33 / completed 0.38 / collided 0.24 / ADE 0.84 m /
+FDE 1.92 m (on v2: 0.62 / 0.70 / 0.20 / 0.49 / 1.12), so v3 separates a policy from "keep going" far better.
+
+### Descriptions (`v2_annotations`, `v3_annotations`)
+
+Every final-frame scenario has a short description written by Claude Haiku 4.5 from the 11 views (5 s before to the
+final frame) and the recorded path: `description`, `place`, `interaction` (`scripts/annotate_samples.py eval`), the
+same procedure as the training set `Jinyan0924/qwen_robotics_nav_pretrain_dedup`. They are hindsight text for
+scoring or training a model's own descriptions, never an input to the policy.
 
 ## Protocol
 

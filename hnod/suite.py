@@ -216,3 +216,58 @@ def path_tags(ref_xy, goal, clearance=None):
     if clearance is not None and np.isfinite(clearance) and clearance < 0.35:
         tags.append("layout:narrow")
     return tags
+
+
+# ----------------------------------------------------------------------------- final-frame task (positions in time)
+
+COMPLETE_RADIUS = 1.0  # m, the predicted end must be this close to where the recording ended
+
+
+def steps_from_timed(pred_xy, final_step, n=N_FUTURE):
+    """Model output (K positions evenly spaced in time up to the final frame) -> positions at the scenario's
+    future steps.  Steps after the final frame repeat the last position (the robot has arrived and stands)."""
+    pred = np.asarray(pred_xy, float).reshape(-1, 2)
+    path = np.vstack([[0.0, 0.0], pred])
+    u = np.linspace(0.0, 1.0, len(path))                      # fraction of the horizon at each given position
+    q = np.minimum(np.arange(1, n + 1) / final_step, 1.0)     # fraction at each scenario step
+    return np.stack([np.interp(q, u, path[:, 0]), np.interp(q, u, path[:, 1])], 1)
+
+
+def score_timed(row, pred_xy, radius=ev.DEFAULT_RADIUS):
+    """Metrics for the final-frame task: the prediction says where the robot is at each moment, so collisions
+    are checked at the recorded timing (no assumed speed).  row needs final_step and final_xy."""
+    step = int(row["final_step"])
+    steps = steps_from_timed(pred_xy, step)
+    res = ev.evaluate_scenario(row, steps, radius=radius, map_tolerance=MAP_TOLERANCE)
+    res["collided_dynamic_any"] = res["collided_dynamic"]
+    res["collided_dynamic"], res["clearance_dynamic"] = at_fault_dynamic(row, steps, radius)
+    res["collided"] = res["collided_dynamic"] or res["collided_static"] or res["collided_map"]
+    e = row["ego"]
+    ref = np.stack([e["x"], e["y"]], 1)[CURRENT + 1:CURRENT + 1 + step] - [e["x"][CURRENT], e["y"][CURRENT]]
+    err = np.linalg.norm(steps[:step] - ref, axis=1)
+    dt = 1.0 / row["rate_hz"]
+    vel = np.diff(np.vstack([[0.0, 0.0], steps[:step]]), axis=0) / dt
+    acc = np.linalg.norm(np.diff(vel, axis=0), axis=1) / dt if step > 1 else np.zeros(1)
+    end_error = float(np.linalg.norm(steps[step - 1] - np.asarray(row["final_xy"], float)))
+    res.update(ade=float(err.mean()), fde=float(err[-1]), end_error_m=end_error,
+               completed=bool(end_error <= COMPLETE_RADIUS), wiggle_rad=wiggle(steps[:step]),
+               max_accel=float(acc.max()), speed_mps=float(np.linalg.norm(vel, axis=1).mean()),
+               reference_distance_m=float(np.linalg.norm(np.diff(np.vstack([[0.0, 0.0], ref]), axis=0), axis=1).sum()))
+    res["success"] = bool(res["completed"] and not res["collided"])
+    return res
+
+
+TIMED_METRICS = ["success", "completed", "collided", "collided_dynamic", "collided_map", "ade", "fde", "end_error_m",
+                 "wiggle_rad", "max_accel", "speed_mps"]
+
+
+def timed_baselines(row, k=10):
+    """K positions over the horizon for the naive planners: stand still, keep the current velocity, the recording."""
+    step, e, rate = int(row["final_step"]), row["ego"], row["rate_hz"]
+    t = np.arange(1, k + 1) / k * step / rate
+    v = np.array([e["vx"][CURRENT], e["vy"][CURRENT]])
+    ref = np.stack([e["x"], e["y"]], 1)[CURRENT:CURRENT + 1 + step] - [e["x"][CURRENT], e["y"][CURRENT]]
+    u = np.arange(step + 1) / step
+    q = np.arange(1, k + 1) / k
+    return {"stationary": np.zeros((k, 2)), "constant_velocity": t[:, None] * v[None],
+            "recorded": np.stack([np.interp(q, u, ref[:, 0]), np.interp(q, u, ref[:, 1])], 1)}

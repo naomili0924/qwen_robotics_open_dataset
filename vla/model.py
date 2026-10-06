@@ -9,6 +9,7 @@ from .heads import AuxHead, build_head
 from .tasks import aux_tasks
 
 INPUT_KEYS = ("input_ids", "attention_mask", "pixel_values", "image_grid_thw")
+OPTIONAL_INPUT_KEYS = ("mm_token_type_ids",)  # Qwen3-VL's processor returns it and the model requires it
 
 
 def _pad_linear(layer, n, dim):
@@ -36,8 +37,10 @@ def pad_vision_mlp(visual, multiple=64):
     1.6x faster padded.  Mathematically identical: padded gate/up rows are zero (silu(0) * 0 = 0) and the
     padded down-projection columns are zero.
     """
-    for blk in visual.blocks:
+    for blk in getattr(visual, "blocks", []):
         m = blk.mlp
+        if not hasattr(m, "gate_proj"):  # other vision towers (e.g. Qwen3-VL) have a plain two-layer MLP
+            return
         n = -(-m.gate_proj.out_features // multiple) * multiple
         if n == m.gate_proj.out_features:
             continue
@@ -51,20 +54,27 @@ class NavPolicy(nn.Module):
         self.cfg = cfg
         self.device = device
         self.processor = AutoProcessor.from_pretrained(cfg.backbone)
+        dtype = {"bf16": torch.bfloat16, "fp32": torch.float32}.get(
+            cfg.backbone_dtype, torch.float32 if cfg.backbone_mode == "full" else torch.bfloat16)
         full = AutoModelForImageTextToText.from_pretrained(
-            cfg.backbone, dtype=torch.float32 if cfg.backbone_mode == "full" else torch.bfloat16, device_map=device,
+            cfg.backbone, dtype=dtype, device_map=device,
             **({"attn_implementation": cfg.attn_implementation} if cfg.attn_implementation else {}))
         self.backbone = full.model  # vision encoder + language model, without the vocabulary head
-        del full.lm_head
+        if cfg.text_loss:  # the description target needs the vocabulary head (frozen; tied to the embeddings on small Qwens)
+            self.lm_head = full.lm_head.requires_grad_(False)
+        else:
+            del full.lm_head
         hidden = self.backbone.config.text_config.hidden_size
         if cfg.backbone_mode == "frozen":
             self.backbone.requires_grad_(False)
         elif cfg.backbone_mode == "lora":
             from peft import LoraConfig, get_peft_model
-            targets = r".*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)$"
+            # attention, Qwen3.5's linear-attention projections, and the MLPs of the language model
+            lm = r"language_model.*\.(q_proj|k_proj|v_proj|o_proj|in_proj_qkv|in_proj_z|out_proj|gate_proj|up_proj|down_proj)"
+            targets = rf".*{lm}$"
             if cfg.tune_vision:
-                targets = (r".*(language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)"
-                           r"|visual\.blocks.*\.(qkv|proj|gate_proj|up_proj|down_proj))$")
+                targets = rf".*({lm}|visual\.blocks.*\.(qkv|proj|gate_proj|up_proj|down_proj))$"
+            targets = cfg.lora_targets or targets
             self.backbone = get_peft_model(self.backbone, LoraConfig(
                 r=cfg.lora_rank, lora_alpha=cfg.lora_alpha, lora_dropout=cfg.lora_dropout, target_modules=targets))
         elif cfg.backbone_mode == "full":
@@ -110,21 +120,37 @@ class NavPolicy(nn.Module):
     def encode(self, batch):
         """Backbone tokens for the heads: summary (B,H) at the last prompt token, memory (B,L,H), mask, kin."""
         inputs = {k: batch[k] for k in INPUT_KEYS}
+        inputs.update({k: batch[k] for k in OPTIONAL_INPUT_KEYS if k in batch})
         inputs["use_cache"] = False
         # no graph under predict()'s no_grad (enable_grad here used to re-enable it and cost 10+ GB at inference)
         ctx = torch.enable_grad() if self.backbone_trains and torch.is_grad_enabled() else torch.no_grad()
         with ctx, torch.autocast("cuda", dtype=torch.bfloat16):
             hs = self.backbone(**inputs).last_hidden_state
         mask = batch["attention_mask"].bool()
-        last = mask.sum(1) - 1
-        return dict(summary=hs[torch.arange(len(hs)), last].float(), memory=hs.float(), mask=mask,
+        last = batch["summary_pos"] if "summary_pos" in batch else mask.sum(1) - 1
+        cond = dict(summary=hs[torch.arange(len(hs)), last].float(), memory=hs.float(), mask=mask,
                     kin=batch["kin"].float())
+        if "labels" in batch and self.cfg.text_loss:
+            cond["text"] = self.text_loss(hs, batch["labels"])
+        return cond
+
+    def text_loss(self, hs, labels):
+        """Cross-entropy of the description tokens (labels != -100), predicted from the previous position."""
+        tgt = labels[:, 1:]
+        keep = tgt != -100
+        if not keep.any():
+            return hs.sum() * 0.0
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            logits = self.lm_head(hs[:, :-1][keep])
+        return nn.functional.cross_entropy(logits.float(), tgt[keep])
 
     def losses(self, batch):
         cond = self.encode(batch)
         out = {}
         if "trajectory" in self.cfg.tasks:
             out["trajectory"] = self.head.loss(cond, batch["target"].float())
+        if "text" in cond:
+            out["text"] = self.cfg.text_loss * cond["text"]
         for name, head in self.aux.items():
             out[name] = head.task.weight * head.loss(cond, batch["aux"][name].float())
         return out
@@ -155,7 +181,11 @@ class NavPolicy(nn.Module):
         if self.cfg.backbone_mode == "lora":
             self.backbone.save_pretrained(d / "lora", selected_adapters=["default"])
         elif self.cfg.backbone_mode == "full":
-            torch.save(self.backbone.state_dict(), d / "backbone.pt")
+            # the trained weights only (a frozen vision tower is the base model's), in bf16: about 6 GB for the 3B model
+            from safetensors.torch import save_file
+            trained = {n: p.detach().to(torch.bfloat16).cpu().contiguous() for n, p in self.backbone.named_parameters()
+                       if p.requires_grad}
+            save_file(trained, str(d / "backbone.safetensors"))
         self.cfg.save(d / "config.json")
 
     def load(self, directory, strict=True):
@@ -174,6 +204,16 @@ class NavPolicy(nn.Module):
             from peft import set_peft_model_state_dict
             from safetensors.torch import load_file
             set_peft_model_state_dict(self.backbone, load_file(d / "lora" / "adapter_model.safetensors"))
+        elif self.cfg.backbone_mode == "full" and (d / "backbone.safetensors").exists():
+            from safetensors.torch import load_file
+            state = load_file(str(d / "backbone.safetensors"), device=str(self.device))
+            own = dict(self.backbone.named_parameters())
+            unknown = [k for k in state if k not in own]
+            if unknown:
+                raise RuntimeError(f"backbone weights not in the model: {unknown[:5]}")
+            with torch.no_grad():
+                for k, v in state.items():
+                    own[k].copy_(v.to(own[k].dtype))
         elif self.cfg.backbone_mode == "full" and (d / "backbone.pt").exists():
             self.backbone.load_state_dict(torch.load(d / "backbone.pt", map_location=self.device))
         return self

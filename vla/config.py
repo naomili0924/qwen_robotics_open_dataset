@@ -23,14 +23,23 @@ class Config:
     data_format: str = "scenarios"      # scenarios (21-step rows, cfg.data) | frames (cfg.frames_repos)
     frames_repos: str = ""              # comma-separated repos with frames / episodes configs, e.g. ..._egowalk,..._coda
     frames_mix: str = "proportional"    # proportional to size | sqrt (to its square root) | equal (each repo equally often)
+    val_frames_repos: str = ""          # repos for the validation stream when they differ (a reduced training repo has no val split)
     spacing_m: float = 0.25             # frames: target waypoints every this many metres along the path (horizon of them)
     past_dt_s: float = 0.5              # frames: history images every this many seconds
     min_indoor_prob: float = 0.0        # frames: keep only samples whose current frame is at least this likely indoor
+    window_mode: str = "prompt"         # frames: prompt (goal in the prompt, waypoints by distance) | final_frame
+                                        # (past frames + the frame horizon_s ahead -> positions in time; cfg.frames
+                                        # counts every image: past + now + final)
+    horizon_s: float = 5.0              # final_frame: the final frame is this far ahead; `horizon` positions span it
+    camera_prompt: bool = False         # final_frame: tell the model the camera's field of view and height from the stored
+                                        # calibration (hnod.windows.camera_prompt); values we are not certain of are "unknown"
     stream: bool = False                # frames: stream shards from the Hub (bounded disk) instead of downloading the split
     val_items: int = 256                # stream: validation items (a single pass, spread over episodes)
     # --- model
     backbone: str = "Qwen/Qwen2.5-VL-3B-Instruct"
     backbone_mode: str = "lora"         # frozen | lora | full
+    lora_targets: str = ""              # regex of module names to adapt (default: attention, linear attention and MLPs of the LM)
+    backbone_dtype: str = "auto"        # auto (fp32 master weights for full fine-tuning, else bf16) | bf16 | fp32
     lora_rank: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.05
@@ -51,8 +60,11 @@ class Config:
     horizon: int = 10                   # future steps predicted
     action_dim: int = 2                 # x, y
     tasks: str = "trajectory"           # comma-separated: trajectory plus any of vla.tasks.TASKS (occupancy, collision, ...)
+    text_loss: float = 0.0              # weight of the language loss on a sample's description (data/annotations of a
+                                        # frames repo), written after the prompt as the assistant's text; 0 = off
     kinematic_input: bool = True        # feed past positions / speed / goal to the heads as numbers, not only as prompt text
-    init_from: str = ""                 # load weights (adapters + heads) from this checkpoint, start a fresh optimiser
+    init_from: str = ""                 # load weights (adapters + heads) from this checkpoint, start a fresh optimiser;
+                                        # a path or hub:<repo>/<run>/<folder> (vla.hub.resolve_init)
     freeze_backbone: bool = False       # after loading: train heads only (transfer test of a learnt embedding)
     # --- reinforcement learning (vla.rl)
     algo: str = "grpo"                  # grpo | ppo
@@ -74,6 +86,7 @@ class Config:
     lr_head: float = 3e-4
     lr_backbone: float = 1e-4           # LoRA; use ~2e-5 for full fine-tuning
     weight_decay: float = 0.01
+    optimizer: str = "adamw"            # adamw | adamw8bit (bitsandbytes; the Adam state of a full fine-tune in 2 bytes/param)
     warmup: int = 100
     clip_grad: float = 1.0
     seed: int = 0

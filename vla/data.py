@@ -17,6 +17,12 @@ SYSTEM_PROMPT = ("You are the navigation policy of a mobile robot. The images ar
                  "current frame: x forward, y left.")
 
 
+FINAL_FRAME_SYSTEM = ("You watch a camera carried through the world by a human or a robot. The images are its front "
+                      "view: first the past, oldest first, then the view now, then the view at the end of the next "
+                      "{h:g} seconds. Predict where the camera is at {n} moments evenly spaced over those {h:g} seconds, "
+                      "in metres relative to its position now: x forward, y left.")
+
+
 def load_split(cfg, split, columns=None):
     """A map-style datasets.Dataset for one split, local parquet directory or Hub repo."""
     if os.path.isdir(cfg.data):
@@ -97,6 +103,10 @@ class NavDataset(Dataset):
 
 def window_config(cfg):
     from hnod.windows import WindowConfig
+    if cfg.window_mode == "final_frame":
+        return WindowConfig(mode="final_frame", camera_prompt=cfg.camera_prompt, horizon_s=cfg.horizon_s, n_waypoints=cfg.horizon,
+                            n_past=cfg.frames - 2, past_dt_s=cfg.past_dt_s, min_indoor_prob=cfg.min_indoor_prob,
+                            seed=cfg.seed)
     return WindowConfig(n_waypoints=cfg.horizon, spacing_m=cfg.spacing_m, n_past=CURRENT, past_dt_s=cfg.past_dt_s,
                         min_indoor_prob=cfg.min_indoor_prob, seed=cfg.seed)
 
@@ -136,9 +146,34 @@ def frames_prompt(s, cfg):
     return " ".join(parts)
 
 
+def final_frame_tags(n_images, cfg):
+    """Text placed before each image: past views, the current view, the view at the end of the horizon."""
+    n_past = n_images - 2
+    past = [f"View {cfg.past_dt_s * (n_past - j):g} s ago:" for j in range(n_past)]
+    return past + ["View now:", f"View in {cfg.horizon_s:g} s:"]
+
+
+def final_frame_item(images, final_image, prompt, cfg, target=None, index=0, scenario_id="0"):
+    """Item for the final-frame task: images + embodiment sentence only (no positions, speed or goal numbers)."""
+    imgs = [im.convert("RGB") for im in images][-(cfg.frames - 1):]
+    imgs = [imgs[0]] * (cfg.frames - 1 - len(imgs)) + imgs + [final_image.convert("RGB")]
+    if target is None:
+        target = np.zeros((cfg.horizon, cfg.action_dim), np.float32)
+    return dict(index=index, scenario_id=scenario_id, images=imgs, image_tags=final_frame_tags(len(imgs), cfg),
+                system=FINAL_FRAME_SYSTEM.format(h=cfg.horizon_s, n=cfg.horizon), prompt=prompt,
+                kin=np.zeros(KIN_DIM, np.float32), target=np.asarray(target, np.float32), aux={})
+
+
 def frame_item(windows, k, cfg, index=0):
     """One training item (NavDataset layout) for sample k of a hnod.windows.FrameWindows."""
     s = windows[k]
+    if "final_image" in s:
+        item = final_frame_item(s["images"], s["final_image"], s["prompt"], cfg,
+                                target=s["target"][:, :cfg.action_dim] / cfg.action_scale, index=index,
+                                scenario_id=f"{s['episode_id']}:{s['frame_index']}")
+        if cfg.text_loss:  # the sample's description (hindsight text) is a training target, never an input
+            item["description"] = getattr(windows, "descriptions", {}).get((s["episode_id"], s["frame_index"]), "")
+        return item
     goal = s["goal"] if s["goal_given"] else np.zeros(2, np.float32)
     kin = np.r_[s["past_xy"].ravel(), s["velocity"], goal].astype(np.float32)
     return dict(index=index, scenario_id=f"{s['episode_id']}:{s['frame_index']}",
@@ -157,14 +192,14 @@ class _StreamItem:
         return frame_item(windows, k, self.cfg)
 
 
-def stream_frames(cfg, split, finite=False, max_items=0):
+def stream_frames(cfg, split, finite=False, max_items=0, repos=None):
     """vla.stream.StreamFrames over cfg.frames_repos (Hub repos), bounded disk use."""
     import dataclasses
     from vla.stream import StreamFrames
     wcfg = window_config(cfg)
     if finite:
         wcfg = dataclasses.replace(wcfg, stride=10)  # validation: spread a fixed number of items over episodes
-    repos = [r.strip() for r in cfg.frames_repos.split(",") if r.strip()]
+    repos = [r.strip() for r in (repos or cfg.frames_repos).split(",") if r.strip()]
     return StreamFrames(repos, split, wcfg, _StreamItem(cfg), mix=cfg.frames_mix, seed=cfg.seed, finite=finite,
                         max_items=max_items)
 
@@ -235,20 +270,63 @@ class Collator:
         processor.image_processor.min_pixels = cfg.min_pixels
         processor.tokenizer.padding_side = "right"  # the last real token of each row is found via the mask
 
+    def render(self, messages):
+        """Chat-template text; a base model without a template gets the same turns written out by hand
+        (Qwen's <|im_start|> format, images as <|vision_start|><|image_pad|><|vision_end|>)."""
+        if getattr(self.processor, "chat_template", None):
+            return self.processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+        tok = getattr(self.processor, "image_token", "<|image_pad|>")
+        out = []
+        for m in messages:
+            body = "".join(f"<|vision_start|>{tok}<|vision_end|>" if c["type"] == "image" else c["text"] for c in m["content"])
+            out.append(f"<|im_start|>{m['role']}\n{body}<|im_end|>\n")
+        return "".join(out) + "<|im_start|>assistant\n"
+
     def __call__(self, items):
         texts, images = [], []
         for it in items:
-            messages = [{"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
-                        {"role": "user", "content": [*[{"type": "image"} for _ in it["images"]],
-                                                     {"type": "text", "text": it["prompt"]}]}]
-            texts.append(self.processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=False))
+            tags = it.get("image_tags")
+            views = [{"type": "image"} for _ in it["images"]] if not tags else \
+                [part for tag in tags for part in ({"type": "text", "text": tag}, {"type": "image"})]
+            messages = [{"role": "system", "content": [{"type": "text", "text": it.get("system", SYSTEM_PROMPT)}]},
+                        {"role": "user", "content": [*views, {"type": "text", "text": it["prompt"]}]}]
+            texts.append(self.render(messages))
             images += it["images"]
         batch = dict(self.processor(text=texts, images=images, padding=True, return_tensors="pt"))
+        if self.cfg.text_loss and any(it.get("description") for it in items):
+            batch = self.append_text(batch, [it.get("description", "") for it in items])
         batch["target"] = torch.from_numpy(np.stack([it["target"] for it in items]))
         batch["kin"] = torch.from_numpy(np.stack([it["kin"] for it in items]))
         batch["aux"] = {k: torch.from_numpy(np.stack([it["aux"][k] for it in items])) for k in items[0]["aux"]}
         batch["index"] = torch.tensor([it["index"] for it in items])
         batch["scenario_id"] = [it["scenario_id"] for it in items]
+        return batch
+
+
+    def append_text(self, batch, texts):
+        """Write each description after the prompt (assistant turn) with labels on its tokens only; the heads keep
+        reading the last prompt token (`summary_pos`), which never sees the text under causal attention."""
+        tok = self.processor.tokenizer
+        end = tok.convert_tokens_to_ids("<|im_end|>")
+        lens = batch["attention_mask"].sum(1).tolist()
+        extra = [(tok(t, add_special_tokens=False)["input_ids"] + [end]) if t else [] for t in texts]
+        L = max(n + len(e) for n, e in zip(lens, extra))
+        B = len(lens)
+        ids = torch.full((B, L), tok.pad_token_id, dtype=batch["input_ids"].dtype)
+        mask = torch.zeros((B, L), dtype=batch["attention_mask"].dtype)
+        labels = torch.full((B, L), -100, dtype=torch.long)
+        types = torch.zeros((B, L), dtype=batch["mm_token_type_ids"].dtype) if "mm_token_type_ids" in batch else None
+        for i, (n, e) in enumerate(zip(lens, extra)):
+            ids[i, :n] = batch["input_ids"][i, :n]
+            mask[i, :n + len(e)] = 1
+            if types is not None:
+                types[i, :n] = batch["mm_token_type_ids"][i, :n]
+            if e:
+                ids[i, n:n + len(e)] = torch.tensor(e)
+                labels[i, n:n + len(e)] = torch.tensor(e)
+        batch.update(input_ids=ids, attention_mask=mask, labels=labels, summary_pos=torch.tensor(lens) - 1)
+        if types is not None:
+            batch["mm_token_type_ids"] = types
         return batch
 
 

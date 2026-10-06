@@ -185,5 +185,25 @@ class NavigationPipeline:
         batch = to_device(self.collate([item]), self.model.device)
         return self.model.predict(batch)["trajectory"][0, :, :2].float().cpu().numpy()
 
+    @torch.no_grad()
+    def predict_motion(self, images, final_image, embodiment="robot", camera=None):
+        """Final-frame policies (window_mode="final_frame"): past views + the view at the end of the horizon ->
+        (cfg.horizon, 2) positions in metres, evenly spaced in time over cfg.horizon_s seconds.
+
+        images: PIL images cfg.past_dt_s apart, oldest first, the last is the current view.
+        final_image: the view cfg.horizon_s seconds from now.  embodiment: "human" or "robot".
+        camera: calibration dict (width, height, K, height_m, height_source) for policies trained with
+        --camera-prompt; None or {} tells the model the camera is unknown.  Never pass estimated values.
+        """
+        from vla.data import final_frame_item
+        from hnod.windows import embodiment_prompt
+        assert self.cfg.window_mode == "final_frame", "this checkpoint is not a final-frame policy"
+        prompt = embodiment_prompt("person_walking" if embodiment.startswith(("human", "person")) else "wheeled_robot",
+                                   self.cfg.past_dt_s, self.cfg.horizon, self.cfg.horizon_s,
+                                   camera=(camera or {}) if self.cfg.camera_prompt else None)
+        self.model.eval()
+        batch = to_device(self.collate([final_frame_item(images, final_image, prompt, self.cfg)]), self.model.device)
+        return self.model.predict(batch)["trajectory"][0, :, :2].float().cpu().numpy()
+
     def __repr__(self):
         return f"NavigationPipeline({self.model.describe()})"

@@ -105,7 +105,8 @@ def train(cfg: Config, model=None, train_ds=None, val_rows=None):
     if cfg.data_format == "frames" and cfg.stream:
         assert not tasks, "auxiliary tasks need scenario rows; per-frame data trains the trajectory only"
         train_set = stream_frames(cfg, cfg.train_split)
-        val_set = stream_frames(cfg, cfg.val_split, finite=True, max_items=max(1, cfg.val_items // max(1, cfg.workers)))
+        val_set = stream_frames(cfg, cfg.val_split, finite=True, max_items=max(1, cfg.val_items // max(1, cfg.workers)),
+                                repos=cfg.val_frames_repos or None)
         val_rows = None
         print("train stream:", train_set.describe(), "| val:", val_set.describe(), flush=True)
         if cfg.action_scale <= 0:
@@ -134,6 +135,7 @@ def train(cfg: Config, model=None, train_ds=None, val_rows=None):
     print(f"action scale {cfg.action_scale:.2f} m", flush=True)
 
     if model is None:
+        cfg.init_from = hub.resolve_init(cfg.init_from)  # a Hub checkpoint ("hub:<repo>/<run>/<folder>") or a path
         model = NavPolicy(cfg)
     print(model.describe(), flush=True)
     collate = Collator(model.processor, cfg)
@@ -144,16 +146,25 @@ def train(cfg: Config, model=None, train_ds=None, val_rows=None):
     groups = [{"params": head_params, "lr": cfg.lr_head}]
     if backbone_params:
         groups.append({"params": backbone_params, "lr": cfg.lr_backbone})
-    opt = torch.optim.AdamW(groups, weight_decay=cfg.weight_decay, betas=(0.9, 0.95))
+    if cfg.optimizer == "adamw8bit":
+        import bitsandbytes as bnb
+        opt = bnb.optim.AdamW8bit(groups, weight_decay=cfg.weight_decay, betas=(0.9, 0.95))
+    else:
+        opt = torch.optim.AdamW(groups, weight_decay=cfg.weight_decay, betas=(0.9, 0.95))
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: lr_at(s, cfg))
     step = 0
     resume = hub.resolve_resume(cfg)
     if resume:
         model.load(resume)
-        state = torch.load(Path(resume) / "trainer.pt", map_location="cpu")
-        opt.load_state_dict(state["opt"])
-        sched.load_state_dict(state["sched"])
-        step = state["step"]
+        if (Path(resume) / "trainer.pt").exists():
+            state = torch.load(Path(resume) / "trainer.pt", map_location="cpu")
+            opt.load_state_dict(state["opt"])
+            sched.load_state_dict(state["sched"])
+            step = state["step"]
+        else:  # weights only (the optimizer state of a full fine-tune is not uploaded): Adam restarts
+            step = json.load(open(Path(resume) / "step.json"))["step"]
+            for _ in range(step):
+                sched.step()
         print(f"resumed from {resume} at step {step}", flush=True)
 
     writer = SummaryWriter(run / "tb")
@@ -169,13 +180,15 @@ def train(cfg: Config, model=None, train_ds=None, val_rows=None):
         print(json.dumps({k: (round(v, 4) if isinstance(v, float) else v) for k, v in d.items()}), flush=True)
 
     def save(name):
+        steps = sorted(run.glob("step_*"), key=lambda p: int(p.name.split("_")[1]))
+        keep = max(cfg.keep_local - 1, 0)  # prune before writing: a full-FT step folder is tens of GB
+        for old in steps[:len(steps) - keep]:  # the Hub keeps every version of <run>/last in its history
+            shutil.rmtree(old, ignore_errors=True)
         d = run / name
         model.save(d)
         torch.save({"opt": opt.state_dict(), "sched": sched.state_dict(), "step": step}, d / "trainer.pt")
+        json.dump({"step": step}, open(d / "step.json", "w"))
         hub.save_last(run, name, cfg.hub_repo)
-        steps = sorted(run.glob("step_*"), key=lambda p: int(p.name.split("_")[1]))
-        for old in steps[:-cfg.keep_local]:  # the Hub keeps every version of <run>/last in its history
-            shutil.rmtree(old, ignore_errors=True)
 
     model.train()
     t0, window = time.time(), []

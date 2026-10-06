@@ -40,6 +40,49 @@ class WindowConfig:
     still_m: float = 0.05            # movement below this (odometry jitter) does not count as travel
     min_indoor_prob: float = 0.0     # keep only samples whose current frame is at least this likely indoor
     seed: int = 0
+    # mode "final_frame": the model sees past frames and the one frame `horizon_s` ahead and must reproduce
+    # the recorded motion in between: n_waypoints positions evenly spaced IN TIME (speed is part of the target).
+    # No goal coordinates, no instruction; the prompt only names the embodiment.
+    mode: str = "prompt"             # prompt (goal in words / coordinates, waypoints by distance) | final_frame
+    horizon_s: float = 5.0
+    camera_prompt: bool = False  # final_frame: add the camera sentence (field of view, height or 'unknown') to the prompt
+
+
+EMBODIMENT_TAGS = {"person_walking": "a human walking", "wheeled_robot": "a robot", "legged_robot": "a robot",
+                   "simulated_agent": "a robot"}
+# In the style of Qwen-VLA's embodiment-aware prompt (arXiv 2605.30280, section 2.3): who carries the camera, the
+# rate of the observations and the rate and number of predicted positions.  No task or instruction at this stage.
+EMBODIMENT_TEMPLATE = ("The camera is carried by {tag}. The past views are sampled at {past_hz:g} Hz. "
+                       "Please predict the next {n} positions at {out_hz:g} Hz.")
+
+
+KNOWN_HEIGHT_SOURCES = ("dataset", "simulator")  # calibration we are certain of; anything else is "unknown"
+
+
+def camera_prompt(camera):
+    """One sentence about the camera, from stored calibration only: the field of view from K and the height above
+    the ground when its source is the dataset's calibration or a simulator.  Nothing is estimated or guessed: a
+    missing or estimated value is stated as unknown, so the model knows it has to infer it from the images."""
+    cam = camera or {}
+    K, w, h = cam.get("K"), cam.get("width"), cam.get("height")
+    if K is not None and len(K) >= 5 and w and K[0] and K[0] > 0:
+        hfov = 2 * np.degrees(np.arctan(w / (2 * K[0])))
+        text = f"The camera's horizontal field of view is {hfov:.0f} degrees"
+        if h and K[4] and K[4] > 0:
+            text += f" and its vertical field of view {2 * np.degrees(np.arctan(h / (2 * K[4]))):.0f} degrees"
+    else:
+        text = "The camera's field of view is unknown"
+    hm = cam.get("height_m")
+    if hm is not None and np.isfinite(hm) and cam.get("height_source") in KNOWN_HEIGHT_SOURCES:
+        return text + f"; it is mounted {hm:.2f} m above the ground."
+    return text + "; its height above the ground is unknown."
+
+
+def embodiment_prompt(embodiment, past_dt_s=1.0, n=10, horizon_s=5.0, camera=None):
+    """The embodiment sentence; with `camera` (an episode's camera dict, possibly empty) also the camera sentence."""
+    text = EMBODIMENT_TEMPLATE.format(tag=EMBODIMENT_TAGS.get(embodiment, "a robot"), past_hz=1.0 / past_dt_s, n=n,
+                                      out_hz=n / horizon_s)
+    return text if camera is None else text + " " + camera_prompt(camera)
 
 
 def _wrap(a):
@@ -86,8 +129,9 @@ class FrameWindows:
     episodes: datasets.Dataset (or list of dicts) of the episodes config for the same split.
     """
 
-    def __init__(self, frames, episodes, cfg=None):
-        self.frames, self.cfg = frames, cfg or WindowConfig()
+    def __init__(self, frames, episodes, cfg=None, allowed=None):
+        """allowed: optional set of (episode_id, frame_index) to restrict the samples to (a published sample list)."""
+        self.frames, self.cfg, self.allowed = frames, cfg or WindowConfig(), allowed
         table = frames.data
         ep_col = np.asarray(table.column("episode_id").to_pylist())
         self.t = table.column("timestamp").to_numpy()
@@ -113,9 +157,14 @@ class FrameWindows:
             rows = np.arange(a, b, c.stride)
             left = self.s[b - 1] - self.s[rows]
             keep = (left >= need) | (at_rest & (left >= 0))
+            if c.mode == "final_frame":  # the recording must continue for the whole horizon (standing still counts)
+                keep = self.t[b - 1] - self.t[rows] >= c.horizon_s - 1e-6
             prob = self.episodes.get(self.ep_ids[e], {}).get("frame_indoor_prob")
             if c.min_indoor_prob > 0 and prob is not None and len(prob) == b - a:
                 keep &= np.asarray(prob)[rows - a] >= c.min_indoor_prob
+            if self.allowed is not None:
+                eid = str(self.ep_ids[e])
+                keep &= np.array([(eid, int(r - a)) in self.allowed for r in rows], bool)
             out.append(rows[keep])
         return np.concatenate(out) if out else np.zeros(0, int)
 
@@ -138,6 +187,8 @@ class FrameWindows:
         ep = self.episodes.get(self.ep_ids[e], {})
         rng = np.random.default_rng([c.seed, i])
         p0 = self.pose[i]
+        if c.mode == "final_frame":
+            return self._final_frame_sample(i, e, a, b, ep)
 
         # history: frames at t - j * past_dt, nearest at or before, clamped to the episode start
         want = self.t[i] - c.past_dt_s * np.arange(c.n_past, -1, -1)
@@ -185,13 +236,41 @@ class FrameWindows:
                     task=task, instruction=instruction, prompt=prompt,
                     dataset=ep.get("dataset", ""), rate_hz=float(ep.get("rate_hz", 0) or 0))
 
+    def _final_frame_sample(self, i, e, a, b, ep):
+        """Past frames + the frame horizon_s ahead -> the recorded positions in between, by time."""
+        c, p0, t0 = self.cfg, self.pose[i], self.t[i]
+        tt = self.t[a:b]
+        want = t0 - c.past_dt_s * np.arange(c.n_past, -1, -1)
+        # the frame nearest each past time (the same rule as scripts/publish_dedup.py, which stores images only for
+        # these frames), never after the current one
+        rows = np.minimum(a + np.abs(tt[:, None] - want[None]).argmin(0), i)
+        times = t0 + c.horizon_s * np.arange(1, c.n_waypoints + 1) / c.n_waypoints
+        xy = np.stack([np.interp(times, tt, self.pose[a:b, 0]), np.interp(times, tt, self.pose[a:b, 1])], -1)
+        yaw = np.interp(times, tt, np.unwrap(self.pose[a:b, 3]))
+        wxy, wyaw = to_frame(p0, xy, yaw)
+        j = a + int(np.argmin(np.abs(tt - (t0 + c.horizon_s))))  # the frame nearest the end of the horizon
+        embodiment = ep.get("embodiment", "") or ""
+        return dict(row=i, episode_id=str(self.ep_ids[e]), frame_index=int(i - a), history_rows=rows,
+                    final_row=j, final_dt_s=float(self.t[j] - t0), target=np.c_[wxy, wyaw].astype(np.float32),
+                    embodiment=embodiment, task="final_frame",
+                    prompt=embodiment_prompt(embodiment, c.past_dt_s, c.n_waypoints, c.horizon_s,
+                                             camera=(ep.get("camera") or {}) if c.camera_prompt else None),
+                    dataset=ep.get("dataset", ""), rate_hz=float(ep.get("rate_hz", 0) or 0))
+
     def images(self, rows, column="image"):
         """PIL images for frame rows (repeats allowed)."""
         uniq, inv = np.unique(rows, return_inverse=True)
         got = self.frames.select(uniq.tolist()).select_columns([column])[column]
+        if any(g is None for g in got):
+            raise ValueError(f"no image stored for rows {uniq[[g is None for g in got]].tolist()} (a reduced repo "
+                             "stores images only for the frames its listed samples need)")
         return [got[j] for j in inv]
 
     def __getitem__(self, k):
         out = self.sample(k)
-        out["images"] = self.images(out["history_rows"])
+        if "final_row" in out:  # history (oldest first, the last is now) then the final frame
+            imgs = self.images(np.r_[out["history_rows"], out["final_row"]])
+            out["images"], out["final_image"] = imgs[:-1], imgs[-1]
+        else:
+            out["images"] = self.images(out["history_rows"])
         return out

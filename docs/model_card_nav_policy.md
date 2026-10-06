@@ -30,9 +30,25 @@ imitation on open navigation data. Code, data conversion and evaluation:
 > It collides often in cluttered houses (see Results). **Research use only, non-commercial** (see Licence).
 > Not safety-tested: do not run it on a robot near people.
 
+> **Update 2026-10-06:** run `e1_all_sqrt` was stopped at step 12,000. Tests showed it takes its goal from a
+> numeric side-channel and ignores the prompt text, so it is kept only as a baseline. Folders starting with `ff`
+> belong to the next stage, final-frame pretraining (past frames + the frame 5 s ahead -> motion), described in
+> `docs/final_frame_pretraining.md` of the code repository; `ff0_e2e_test` is a 500-step pipeline test, not a model to use.
+
 ## Checkpoints
 
-All under `e1_all_sqrt/`:
+**Final-frame forecasting model (recommended): `ff3_lora4b_dedup/`** — `Qwen/Qwen3.5-4B-Base` + LoRA (rank 32) on
+the language model, action head MLP. Input: 5 past frames (1 Hz), the current frame and the frame 5 s ahead, plus
+one sentence saying who carries the camera (human / robot); output: 10 positions at 0.5 s. Trained on the 49,391
+motion-deduplicated samples of
+[`qwen_robotics_nav_pretrain_dedup`](https://huggingface.co/datasets/Jinyan0924/qwen_robotics_nav_pretrain_dedup)
+with their descriptions as an auxiliary text target. Stopped at step 4,325; `step_1000` ... `step_4000`, `best` and
+`last` (= step 4,000) are kept, each about 280 MB (`lora/`, `head.pt`, `config.json`) plus `eval/` with the
+predictions on both evaluation suites. It needs the future frame, so it is a forecasting / pretraining model, not an
+onboard policy. Earlier final-frame runs: `ff0_e2e_test` (Qwen3-VL-2B, pipeline test) and `ff2_qwen35_2b` (2B full
+fine-tune on all 1.1 M frames, stopped at step 3,450; it did not read the final frame).
+
+**Goal-prompt baseline: `e1_all_sqrt/`** (Qwen2.5-VL-3B LoRA, goal as text + numbers; the model ignored the goal):
 
 | Folder | What |
 |---|---|
@@ -86,6 +102,26 @@ path = pipe.predict_path(images, goal=(4.0, -1.0))    # (8, 2) waypoints in metr
 | Hardware | one H100, about 4.8 s per step |
 
 ## Results so far
+
+### Final-frame task (`ff3_lora4b_dedup/step_4000`)
+
+Evaluation configs `v2_final_frame` (134 scenarios, two thirds straight) and `v3_final_frame` (132 motion-diverse
+scenarios) of the suite; the prediction is scored at the recorded timing (collision with people and the map,
+completion = end point within 1 m of the recorded end, ADE / FDE to the recorded path).
+
+| | success | completed | collided | ADE (m) | FDE (m) |
+|---|---|---|---|---|---|
+| v3: constant velocity | 0.33 | 0.38 | 0.24 | 0.84 | 1.92 |
+| **v3: ff3 step 4,000** | **0.43** | **0.54** | 0.27 | **0.70** | **1.25** |
+| v2: constant velocity | 0.62 | 0.70 | 0.20 | 0.49 | 1.12 |
+| v2: ff3 step 4,000 | 0.51 | 0.58 | 0.19 | 0.56 | 1.00 |
+
+Input-use checks on v3: with another scenario's final frame success drops to about 0.10 and the predicted end point
+moves 2.6 m; without the final frame to 0.06; with the human / robot sentence swapped to about 0.2. Robot scenarios
+(success 0.6, collided 0.1) are easier than walking-person ones (0.33, 0.29); indoor collisions with people are the
+weakest point.
+
+### Goal-prompt baseline (`e1_all_sqrt/step_5000`)
 
 [Evaluation suite](https://huggingface.co/datasets/Jinyan0924/qwen_robotics_nav_eval): 150 audited scenarios;
 the predicted path is followed at 0.5 m/s and scored for at-fault collisions and progress towards the goal.

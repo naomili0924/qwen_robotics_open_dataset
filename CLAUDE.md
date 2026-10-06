@@ -69,35 +69,73 @@ lost: `/dev/shm` (where large builds run) is a RAM disk, and `/workspace` is usu
   `MATTERPORT_TOKEN_SECRET`. The owner re-enters them on a new machine. Never print them.
 - New machine: `bash scripts/setup_machine.sh [--habitat]`.
 
-## State on 2026-10-05
+## Direction set by the owner on 2026-10-05 (evening): final-frame pretraining
 
-`main` holds everything through PR #4 (merged 2026-10-05 at the owner's request). New work: a branch and a PR.
+Read `docs/final_frame_pretraining.md` first. In short: run `e1_all_sqrt` showed the model does not read a goal
+cut from the recorded future (text or coordinates), so the owner replaced that recipe with a pretraining stage:
+past frames + **one frame 5 s ahead** -> the recorded positions in between (timed), prompt says only "human" or
+"robot", **no numeric inputs**, language model fully fine-tuned, vision frozen. It is for learning how views and
+motion relate, not for onboard use. The owner's words: start with a small model and a subset for fast iteration;
+no dataset annotation or re-processing at this stage; old checkpoints stay, new runs get new Hub folders; test
+end to end on a sample first, then discuss scale (more GPUs may be rented).
 
-- **Training run `e1_all_sqrt`** (started 2026-10-05, `scripts/run_e1.sh`): LoRA on Qwen2.5-VL-3B, all four training
-  sources streamed from the Hub (`vla/stream.py`), 69,400 steps at about 4.8 s. Checkpoints go to the public model
-  repo `Jinyan0924/qwen_robotics_nav_policy` (`last/` every 1,000 steps, `step_<N>/` every 5,000 and `best/` by
-  validation loss via `scripts/watch_checkpoints.py`, which also scores milestones on the suite). The owner wants
-  the full epoch run before conclusions are drawn. Model card source: `docs/model_card_nav_policy.md`.
-- **Open with the owner:** the model predicts 2 m of path but RoboSense scenarios are scored over 10 s (5 m), so it
-  scores 0 of 33 there by construction; proposed: score every scenario over the first 4 s. Not changed yet.
-- **Per-frame training format** (`hnod/frames.py`, `hnod/windows.py`, `docs/model_formats.md`): configs `frames` +
-  `episodes` per repo; samples (history, waypoints by distance, goal beyond the horizon, prompt) are cut at load
-  time. `vla` trains on it with `--data_format frames --frames_repos a,b,c` (`--frames_mix equal`,
-  `--min_indoor_prob`). Published: EgoWalk (`Jinyan0924/qwen_robotics_open_dataset_egowalk`, 57 h, all splits),
-  and train-only per-frame configs added to the CODa, RoboSense and HSSD repos (`scripts/scenarios_to_frames.py`).
-- **Evaluation suite v1** (`docs/eval_design.md` "As built", `docs/eval_audit_v1.json`): 150 scenarios (100 indoor,
-  50 outdoor), `Jinyan0924/qwen_robotics_nav_eval`. Reserved for evaluation, never train or tune on them: all of
-  JRDB, CODa test + validation, RoboSense validation, HSSD test + validation houses. Rebuild with
-  `scripts/build_eval_suite.py candidates|select|write`; selection keeps the audit's `accepted` scenarios fixed.
-- **Evaluation suite v2** (default config, `docs/eval_audit_v2.json`): all 100 indoor scenarios real (75 MuSoHu, 17
-  JRDB, 8 CODa), same 50 outdoor. MuSoHu (`Jinyan0924/qwen_robotics_open_dataset_musohu`) is reserved for evaluation;
-  its people are tracked in the lidar (`hnod/lidar_tracks.py`). v2 is easier for naive planners than v1 (straight to
-  goal: 69% vs 20% indoor success). GND is outdoor-only; SCAND's server (dataverse.tdl.org) returns 403 to this
-  data-centre IP.
-- **Still open with the owner:** finishing the other 55 HSSD houses at 0.5 m/s; who the PI on the MP3D form is;
-  the `goal` column of the published scenario sets still leaks the answer (the suite uses its own goals).
-- **Next:** first trained models (per-frame data, supervised), scored with `vla/predict_suite.py`; v2 of the
-  suite with more real indoor data (MuSoHu, SCAND indoor parts, HM3D); the remaining HSSD houses at 0.5 m/s.
+## State on 2026-10-06
+
+`main` holds everything through PR #5. Branch `final-frame-pretraining` (PR open) holds this stage.
+
+- **Stopped:** `e1_all_sqrt` (LoRA, goal in prompt + numbers) at step 12,050; checkpoints kept on the public model
+  repo `Jinyan0924/qwen_robotics_nav_policy` (`e1_all_sqrt/last` = step 12,000, `step_5000`, `step_10000`, `best`).
+- **Built:** final-frame samples at load time (`hnod/windows.py` `mode="final_frame"`), items with images +
+  embodiment sentence only (`vla/data.py`), full fine-tune checkpoints as bf16 safetensors without optimizer state
+  (`vla/model.py`, `vla/hub.py`), evaluation config `v2_final_frame` (134 scenarios) with timed scoring
+  (`hnod/suite.py score_timed`) and input-use checks (`vla/eval_final_frame.py`), `scripts/run_ff.sh`.
+- **End-to-end test `ff0_e2e_test`** (Qwen3-VL-2B, 500 steps x 16 samples, 2.9 s/step, 82 GB on one H100):
+  train loss 0.10 -> 0.02; checkpoint reloaded from the Hub and evaluated. Success 29% (constant velocity 62%,
+  recorded 100%). **Input-use checks: swapping or removing the final frame moves the predicted end point by only
+  0.05-0.07 m; swapping the human / robot sentence moves it 0.41 m.** After 8,000 samples the model does not yet
+  use the final frame. Numbers: `/workspace/runs/eval/ff0_step500.json` (also on the model repo under `ff0_e2e_test/eval/`).
+- **Backbone decision (owner, 2026-10-06):** start with Qwen3.5-2B-Base, move to Qwen3.5-4B-Base (the Qwen-VLA
+  backbone) once the 2B shows it learns; the owner may rent a bigger GPU for the 4B. `scripts/run_ff.sh <run>
+  <steps> 2b|4b`. Prompt is Qwen-VLA style: who carries the camera + frame rates, no task.
+- **`ff2_qwen35_2b`** (2B full FT on all 1.11 M frames, 4.1 s/step): stopped by the owner at step 3,450 (GPU wanted for
+  the next run); milestones 1,000-2,500 + `best` (step 3,000) on the Hub. It never used the final frame (swapping it
+  moved the prediction 0.03 m); success 16-26%.
+- **Dedup set + descriptions (2026-10-06):** `Jinyan0924/qwen_robotics_nav_pretrain_dedup` = 49,391 samples chosen
+  motion-first (`scripts/build_dedup_index.py`, `select_dedup.py`, `publish_dedup.py`), with a `samples` table
+  (prompt, system, motion class) and an `annotations` table: Claude Haiku 4.5 descriptions of each sample from 11
+  frames (-5 s..+5 s) + the recorded path (`scripts/annotate_samples.py`, Batch API, $89 for all). Descriptions are
+  a training *target* (`--text-loss W`: assistant text after the prompt, CE on its tokens; the trajectory head still
+  reads the last prompt token), never an input. `ANTHROPIC_API_KEY` lives in `/workspace/.env`.
+- **Stopped by the owner at step 4,325 (19:45 UTC): `ff3_lora4b_dedup`** (started 09:04 UTC 2026-10-06): Qwen3.5-4B-Base, LoRA rank 32 on attention +
+  linear-attention + MLP (`run_ff.sh ... 4b-lora`), dedup set, `--text-loss 0.05`, 6,200 steps (2 epochs), 8.4 s/step,
+  19 GB. **It uses the final frame:** at step 3,000 (1 epoch) success 0.59 / completed 0.65 / collided 0.19 / ADE 0.59 /
+  FDE 0.99 (constant velocity 0.62 / 0.70 / 0.20 / 0.49 / 1.12); swapping the final frame drops success to 0.10 and
+  moves the end point 2.4 m; swapping the prompt 1.2 m. Milestones 1,000-5,000 with evals under
+  `ff3_lora4b_dedup/` on the model repo; `step_4000` = `best` = `last`. Training a 4B here is slowed by the missing
+  `causal_conv1d` wheel (CUDA 13). How to resume, start from its weights (`--init-from hub:...`) or evaluate:
+  `docs/final_frame_pretraining.md`, "Reusing the final-frame checkpoint".
+- **Camera calibration in the prompt (owner, 2026-10-06):** `--camera-prompt` adds the field of view (from K) and the
+  height above the ground to the embodiment sentence, **from stored calibration only**; an estimated or missing value is
+  written as "unknown" (MuSoHu's helmet height was estimated from the lidar and is therefore unknown to the model).
+  Tables carry `camera.height_source` (episodes), `camera_prompt` (dedup samples, final-frame eval configs). Not yet used
+  by a trained run. Next planned run (ff4, not started): from ff3's weights, `--camera-prompt`, plus instruction
+  conditioning (descriptions rewritten into motion-free instructions) mixed with the final frame.
+- **Eval v3 (2026-10-06):** `v3_final_frame` = 132 motion-diverse real scenarios (`scripts/build_eval_v3.py`,
+  `docs/eval_audit_v3.json`); v2 was two thirds straight. Constant velocity on v3: success 0.33, ADE 0.84, FDE 1.92.
+  ff3 at step 3,500 on v3: success 0.41, completed 0.42, collided 0.24, ADE 0.75, FDE 1.32 - the first run that beats
+  constant velocity; swapped final frame moves the end point 2.6 m. Eval scenarios (v2, v3) carry Claude descriptions
+  (`v2_annotations`, `v3_annotations`) and `future_images` at 1 Hz. The watcher scores milestones on v2 and v3.
+- **Hardware notes:** this machine = 1x H100 NVL 94 GB, 128 CPUs, 377 GB RAM, 32 GB root disk (always short:
+  base-model weights go to `HF_HUB_CACHE=/dev/shm/hf_hub`, runs to `/dev/shm/runs`). Throughput: 2B 4.2
+  samples/s (5.2 without checkpointing at 90 GB), 4B 1.8 samples/s (needs 8-bit AdamW; `causal_conv1d` has no
+  wheel for CUDA 13 here, so Qwen3.5 is slower than it could be). One pass over all 1.11 M frames: 2B about
+  3 days, 4B about 7 days on this GPU. **Multi-GPU training is not implemented** (single process; would need
+  DDP + rank-sharded streaming in `vla/stream.py`).
+- **Open with the owner:** whether the gain of ff3 over ff2 comes from the dedup set, the description target or LoRA
+  (one ablation each would tell); how to beat constant velocity on ADE (more epochs, the 1.06 M remaining frames with
+  descriptions, a bigger GPU for the 4B without checkpointing); multi-GPU training is not implemented.
+- **Machine notes:** root disk is 32 GB and nearly full (model caches); run directories and downloads go to
+  `/dev/shm`. The flash-attention kernel cannot load from `/dev/shm` (noexec), so `HF_HOME` stays on the root disk.
 
 ## Source status
 

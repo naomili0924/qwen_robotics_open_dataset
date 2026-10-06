@@ -3,7 +3,8 @@
 
 Runs beside vla.train (no restart needed).  For run <run> and model repo <hub_repo> it keeps on the Hub:
 
-* <run name>/step_<N>/ for every N that is a multiple of --every (LoRA, heads, config; no optimiser state);
+* <run name>/step_<N>/ for every N that is a multiple of --every or listed in --milestones (weights, heads,
+  config; no optimiser state);
 * <run name>/best/: the checkpoint with the lowest validation loss so far, with best.json (step, val_loss).
   Validation loss is the run's own held-out loss (log.jsonl), never the evaluation suite;
 * with --suite: suite metrics of every milestone under <run name>/eval/ (reporting only).
@@ -49,8 +50,8 @@ def val_losses(run):
             d = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if "val_loss" in d:
-            out[int(d["step"])] = float(d["val_loss"])
+        if "val_loss" in d:  # the trajectory loss alone when there are other losses (e.g. the description text)
+            out[int(d["step"])] = float(d.get("val_loss_trajectory", d["val_loss"]))
     return out
 
 
@@ -58,7 +59,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", required=True)
     ap.add_argument("--hub-repo", required=True)
-    ap.add_argument("--every", type=int, default=5000)
+    ap.add_argument("--every", type=int, default=5000, help="a milestone every N steps ...")
+    ap.add_argument("--milestones", default="", help="... plus these steps, e.g. 1000,2000,2500 (early checks)")
     ap.add_argument("--suite", nargs="*", default=[], help="suite versions to score at each milestone, e.g. v1 v2")
     ap.add_argument("--suite-data", default="/workspace/cache/suite/suite/{version}/data")
     ap.add_argument("--poll", type=float, default=60)
@@ -81,22 +83,29 @@ def main():
                 snap = snapshot(d, tmp / d.name)
                 if snap is None:
                     continue
-                if step % args.every == 0:
+                extra = {int(x) for x in args.milestones.split(",") if x.strip()}
+                if step % args.every == 0 or step in extra:
                     api.upload_folder(repo_id=args.hub_repo, folder_path=str(snap), path_in_repo=f"{run.name}/{d.name}",
                                       commit_message=f"{run.name}: milestone {d.name}")
                     state["milestones"].append(step)
                     print(time.strftime("%H:%M:%S"), "milestone", step, flush=True)
+                    final_frame = json.load(open(snap / "config.json")).get("window_mode") == "final_frame"
                     for v in args.suite:
                         out = run / "eval" / f"{d.name}_{v}.json"
                         out.parent.mkdir(exist_ok=True)
-                        r = subprocess.run([sys.executable, "-m", "vla.predict_suite", "--checkpoint", str(snap),
-                                            "--version", v, "--data", args.suite_data.format(version=v),
-                                            "--batch-size", "2", "--out", str(out)], capture_output=True, text=True)
+                        cmd = ([sys.executable, "-m", "vla.eval_final_frame", "--checkpoint", str(snap), "--version", v,
+                                "--data", args.suite_data.format(version=v), "--batch-size", "4", "--out", str(out)]
+                               if final_frame else
+                               [sys.executable, "-m", "vla.predict_suite", "--checkpoint", str(snap), "--version", v,
+                                "--data", args.suite_data.format(version=v), "--batch-size", "2", "--out", str(out)])
+                        r = subprocess.run(cmd, capture_output=True, text=True)
                         if r.returncode == 0:
                             for f in (out, Path(str(out).replace(".json", "_metrics.json"))):
-                                api.upload_file(path_or_fileobj=str(f), path_in_repo=f"{run.name}/eval/{f.name}",
-                                                repo_id=args.hub_repo, commit_message=f"{run.name}: suite {v} at {d.name}")
+                                if f.exists():
+                                    api.upload_file(path_or_fileobj=str(f), path_in_repo=f"{run.name}/eval/{f.name}",
+                                                    repo_id=args.hub_repo, commit_message=f"{run.name}: suite {v} at {d.name}")
                             print(time.strftime("%H:%M:%S"), "suite", v, "scored at", step, flush=True)
+                            print(r.stdout[-1500:], flush=True)
                         else:
                             print("suite eval failed:", r.stderr[-300:], flush=True)
                 if step in losses and (state["best"] is None or losses[step] < state["best"]["val_loss"]):
