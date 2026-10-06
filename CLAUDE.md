@@ -118,8 +118,13 @@ end to end on a sample first, then discuss scale (more GPUs may be rented).
   height above the ground to the embodiment sentence, **from stored calibration only**; an estimated or missing value is
   written as "unknown" (MuSoHu's helmet height was estimated from the lidar and is therefore unknown to the model).
   Tables carry `camera.height_source` (episodes), `camera_prompt` (dedup samples, final-frame eval configs). Not yet used
-  by a trained run. Next planned run (ff4, not started): from ff3's weights, `--camera-prompt`, plus instruction
-  conditioning (descriptions rewritten into motion-free instructions) mixed with the final frame.
+  by a trained run.
+- **Running: `ff4_lora4b_instruction`** (started 19:50 UTC 2026-10-06, owner's request): same base, LoRA and data as
+  ff3, **no final frame**; the annotation (description, place, interaction) is the task text in the prompt
+  (`--no-final-image --instruction description,place,interaction`). 3,100 steps (one epoch), milestones every 1,000
+  scored on v2 and v3 with their annotations; a step-500 sanity eval first. Exact commands and how to resume:
+  `docs/final_frame_pretraining.md`, "Instruction-conditioned variant". Caveat: the text states the outcome, so the
+  score measures text following; a motion-free rewrite of the descriptions would be the stricter test.
 - **Eval v3 (2026-10-06):** `v3_final_frame` = 132 motion-diverse real scenarios (`scripts/build_eval_v3.py`,
   `docs/eval_audit_v3.json`); v2 was two thirds straight. Constant velocity on v3: success 0.33, ADE 0.84, FDE 1.92.
   ff3 at step 3,500 on v3: success 0.41, completed 0.42, collided 0.24, ADE 0.75, FDE 1.32 - the first run that beats
