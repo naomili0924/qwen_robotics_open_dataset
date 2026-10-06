@@ -86,17 +86,23 @@ def main():
                                       commit_message=f"{run.name}: milestone {d.name}")
                     state["milestones"].append(step)
                     print(time.strftime("%H:%M:%S"), "milestone", step, flush=True)
+                    final_frame = json.load(open(snap / "config.json")).get("window_mode") == "final_frame"
                     for v in args.suite:
                         out = run / "eval" / f"{d.name}_{v}.json"
                         out.parent.mkdir(exist_ok=True)
-                        r = subprocess.run([sys.executable, "-m", "vla.predict_suite", "--checkpoint", str(snap),
-                                            "--version", v, "--data", args.suite_data.format(version=v),
-                                            "--batch-size", "2", "--out", str(out)], capture_output=True, text=True)
+                        cmd = ([sys.executable, "-m", "vla.eval_final_frame", "--checkpoint", str(snap), "--version", v,
+                                "--data", args.suite_data.format(version=v), "--batch-size", "4", "--out", str(out)]
+                               if final_frame else
+                               [sys.executable, "-m", "vla.predict_suite", "--checkpoint", str(snap), "--version", v,
+                                "--data", args.suite_data.format(version=v), "--batch-size", "2", "--out", str(out)])
+                        r = subprocess.run(cmd, capture_output=True, text=True)
                         if r.returncode == 0:
                             for f in (out, Path(str(out).replace(".json", "_metrics.json"))):
-                                api.upload_file(path_or_fileobj=str(f), path_in_repo=f"{run.name}/eval/{f.name}",
-                                                repo_id=args.hub_repo, commit_message=f"{run.name}: suite {v} at {d.name}")
+                                if f.exists():
+                                    api.upload_file(path_or_fileobj=str(f), path_in_repo=f"{run.name}/eval/{f.name}",
+                                                    repo_id=args.hub_repo, commit_message=f"{run.name}: suite {v} at {d.name}")
                             print(time.strftime("%H:%M:%S"), "suite", v, "scored at", step, flush=True)
+                            print(r.stdout[-1500:], flush=True)
                         else:
                             print("suite eval failed:", r.stderr[-300:], flush=True)
                 if step in losses and (state["best"] is None or losses[step] < state["best"]["val_loss"]):
