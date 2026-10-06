@@ -94,7 +94,11 @@ points; the simulated houses (orange) collapse from a dense blob to a thin layer
 - `samples` (49,391 rows): `episode_id`, `frame_index`, `source`, `embodiment`, `bucket`, the motion
   summary of the next 5 s, and the text the model sees: `system` (fixed) and `prompt` (rendered from the
   embodiment: *"The camera is carried by a human walking. The past views are sampled at 1 Hz. Please predict
-  the next 10 positions at 2 Hz."*). The task gives no goal: the final frame is the goal.
+  the next 10 positions at 2 Hz."*). The task gives no goal: the final frame is the goal. `camera_prompt` is the
+  optional camera sentence (`--camera-prompt`): field of view from the stored intrinsics and the height above the
+  ground **only when its source is the dataset's calibration or the simulator** (`episodes.camera.height_source`);
+  anything estimated or missing is written as "unknown". The calibration and its provenance are also kept in the code
+  repository (`docs/calibration/`).
 - `annotations` (one row per sample): a description written by Claude Haiku 4.5 from 11 frames (5 s before to
   5 s after the current frame, 1 Hz) and the recorded path: `description` (one or two sentences on where the
   carrier goes, what it passes, avoids or waits for, whether it stops or turns), `place`, `interaction`. These
