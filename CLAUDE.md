@@ -119,7 +119,12 @@ end to end on a sample first, then discuss scale (more GPUs may be rented).
   written as "unknown" (MuSoHu's helmet height was estimated from the lidar and is therefore unknown to the model).
   Tables carry `camera.height_source` (episodes), `camera_prompt` (dedup samples, final-frame eval configs). Not yet used
   by a trained run.
-- **Running: `ff4_lora4b_instruction`** (started 19:50 UTC 2026-10-06, owner's request): same base, LoRA and data as
+- **Finished 10:07 UTC 2026-10-07: `ff4_lora4b_instruction`** (6,200 steps; final on v3 success 0.56 / completed 0.69 /
+  collided 0.21 / ADE 0.53 / FDE 0.82, on v2 0.66 / 0.75 / 0.15 / 0.44 / 0.76; `best` = step 5,500 by val loss;
+  `step_6000` and `last` on the Hub). Still improving slowly at the end (5,000 -> 6,000: +0.03 success on v3), so a
+  continuation with a fresh schedule from `step_6000` is an option. **Running since 10:08 UTC: `ff5_lora4b_instruction_camera`**
+  (= ff4 + `--camera-prompt`, 6,200 steps, launched by `scripts/launch_run.sh`). Details of ff4 (started 19:50 UTC
+  2026-10-06, owner's request): same base, LoRA and data as
   ff3, **no final frame**; the annotation (description, place, interaction) is the task text in the prompt
   (`--no-final-image --instruction description,place,interaction`). Extended to 6,200 steps (two epochs, restarted from
   step 1,000 with the longer schedule), milestones every 1,000 scored on v2 and v3 with their annotations. At step
