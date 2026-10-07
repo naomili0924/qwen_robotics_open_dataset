@@ -126,7 +126,11 @@ end to end on a sample first, then discuss scale (more GPUs may be rented).
   1,000: v3 success 0.41 / completed 0.56 / ADE 0.67 / FDE 1.03; flat at 2,000, then climbing: **step 4,000 on v3
   success 0.55 / completed 0.67 / collided 0.21 / ADE 0.58 / FDE 0.89** (best of any run; ff3@4,000: 0.43 / 0.54 /
   0.27 / 0.70 / 1.25), on v2 0.63 / 0.73 / 0.15 / 0.48 / 0.78 (beats constant velocity there too). Without the text:
-  v3 success 0.20, so the score measures text following; collisions did improve (0.26 -> 0.21). **Queued after it: `ff5_lora4b_instruction_camera`** = ff4 + `--camera-prompt` (ablation, auto-start
+  v3 success 0.20, so the score measures text following; collisions did improve (0.26 -> 0.21). Still improving at
+  5,000 (v2 0.64 / 0.74 / 0.15 / 0.44 / 0.77).
+- **One command per run (owner, 2026-10-07):** `bash scripts/launch_run.sh <run> <steps> <size> <recipe>` = training +
+  watcher; recipes `final_frame` / `instruction` (ff4) / `instruction_camera` (ff5, the only change is
+  `--camera-prompt`). ff5 is launched this way automatically after ff4 (`/workspace/logs/launch_ff5.sh`). **Queued after it: `ff5_lora4b_instruction_camera`** = ff4 + `--camera-prompt` (ablation, auto-start
   via `/workspace/logs/launch_ff5.sh`). Exact commands and how to resume:
   `docs/final_frame_pretraining.md`, "Instruction-conditioned variant". Caveat: the text states the outcome, so the
   score measures text following; a motion-free rewrite of the descriptions would be the stricter test.

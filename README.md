@@ -50,7 +50,8 @@ path = pipe.predict_path(images, goal=(4.0, -1.0))     # (8, 2) waypoints in met
 ```
 
 **Final-frame pretraining** (current stage, [`docs/final_frame_pretraining.md`](docs/final_frame_pretraining.md)):
-past frames + the frame 5 s ahead -> the recorded positions in between; `bash scripts/run_ff.sh <run> <steps> <2b|4b|2b-lora|4b-lora>`,
+past frames + the frame 5 s ahead -> the recorded positions in between; one command per run (training + milestone
+watcher): `bash scripts/launch_run.sh <run> <steps> <2b|4b|2b-lora|4b-lora> <final_frame|instruction|instruction_camera>`,
 `python -m vla.eval_final_frame --hub-repo <user>/<repo> --checkpoint <run>/last --out eval.json`. Best checkpoint so
 far: `ff3_lora4b_dedup/step_4000` on `Jinyan0924/qwen_robotics_nav_policy`; to continue from it
 `--init-from hub:Jinyan0924/qwen_robotics_nav_policy/ff3_lora4b_dedup/step_4000` (see the "Reusing" section of the doc).

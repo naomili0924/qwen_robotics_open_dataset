@@ -139,6 +139,20 @@ python scripts/watch_checkpoints.py --run /dev/shm/runs/ff4_lora4b_instruction -
 To start a later run from its weights: `--init-from hub:Jinyan0924/qwen_robotics_nav_policy/ff4_lora4b_instruction/step_3000`.
 
 
+## One command per run (2026-10-07)
+
+`scripts/launch_run.sh <run> <steps> <size> <recipe>` starts the training (resumable; re-running the same command
+resumes from `<run>/last`, locally or from the Hub) and the watcher that uploads a milestone every 1,000 steps and
+scores it on `v2_final_frame` and `v3_final_frame`. Recipes (`scripts/run_ff.sh`): `final_frame` (ff3 style),
+`instruction` (ff4: past frames + description / place / interaction, no final frame), `instruction_camera` (ff5: the
+same + the camera sentence). `scripts/fetch_eval_suites.sh` pulls the suites from the Hub on a new machine.
+
+```bash
+bash scripts/launch_run.sh ff4_lora4b_instruction 6200 4b-lora instruction                 # ff4
+bash scripts/launch_run.sh ff5_lora4b_instruction_camera 6200 4b-lora instruction_camera   # ff5 (ablation)
+DRY_RUN=1 bash scripts/run_ff.sh <run> <steps> 4b-lora instruction_camera                  # print the flags only
+```
+
 ## Ablation queued: `ff5_lora4b_instruction_camera` (owner, 2026-10-06)
 
 Identical to ff4 (past frames + annotation text, no final frame, 6,200 steps) plus `--camera-prompt`: the prompt also
