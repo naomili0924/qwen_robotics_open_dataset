@@ -121,6 +121,7 @@ def window_config(cfg):
     from hnod.windows import WindowConfig
     if cfg.window_mode == "final_frame":
         return WindowConfig(mode="final_frame", camera_prompt=cfg.camera_prompt, horizon_s=cfg.horizon_s, n_waypoints=cfg.horizon,
+                            min_path_m=cfg.min_path_m, min_net_m=cfg.min_net_m,
                             n_past=cfg.frames - 2, past_dt_s=cfg.past_dt_s, min_indoor_prob=cfg.min_indoor_prob,
                             seed=cfg.seed)
     return WindowConfig(n_waypoints=cfg.horizon, spacing_m=cfg.spacing_m, n_past=CURRENT, past_dt_s=cfg.past_dt_s,

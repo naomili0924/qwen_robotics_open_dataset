@@ -122,3 +122,22 @@ def test_instruction_policy_items_have_no_final_image_and_carry_the_task_text():
     assert it["system"] == INSTRUCTION_SYSTEM.format(h=5.0, n=10) and "Task:" in it["prompt"]
     with_final = final_frame_item(imgs, Image.new("RGB", (64, 48)), "prompt", Config(frames=7, horizon=10, horizon_s=5.0, past_dt_s=1.0))
     assert len(with_final["images"]) == 7 and with_final["image_tags"][-1] == "View in 5 s:"
+
+
+def test_motion_filters_are_chosen_per_run_and_measure_the_horizon():
+    import numpy as np
+    from datasets import Dataset
+    from hnod.windows import FrameWindows, WindowConfig
+    # 30 s at 10 Hz: standing for 15 s, then walking 1 m/s straight ahead
+    t = np.arange(300) / 10.0
+    x = np.where(t < 15, 0.0, t - 15)
+    rows = [dict(episode_id="e", frame_index=i, timestamp=float(t[i]), pose=[float(x[i]), 0.0, 0.0, 0.0]) for i in range(300)]
+    eps = [dict(episode_id="e", embodiment="person_walking")]
+    cfg = dict(mode="final_frame", horizon_s=5.0, n_waypoints=10, n_past=5, past_dt_s=1.0, stride=10)
+    every = FrameWindows(Dataset.from_list(rows), eps, WindowConfig(**cfg))
+    moving = FrameWindows(Dataset.from_list(rows), eps, WindowConfig(**cfg, min_path_m=2.0))
+    assert len(every) == 25                            # samples at 0, 1, ... 24 s (the horizon must fit)
+    starts = [float(t[i]) for i in moving.samples]
+    assert min(starts) == 12.0 and len(moving) == 13   # from 12 s on the next 5 s hold at least 2 m of walking
+    net = FrameWindows(Dataset.from_list(rows), eps, WindowConfig(**cfg, min_net_m=4.5))
+    assert [float(t[i]) for i in net.samples][0] == 15.0
