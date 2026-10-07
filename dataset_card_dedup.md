@@ -101,8 +101,11 @@ points; the simulated houses (orange) collapse from a dense blob to a thin layer
   repository (`docs/calibration/`).
 - `annotations` (one row per sample): a description written by Claude Haiku 4.5 from 11 frames (5 s before to
   5 s after the current frame, 1 Hz) and the recorded path: `description` (one or two sentences on where the
-  carrier goes, what it passes, avoids or waits for, whether it stops or turns), `place`, `interaction`. These
-  are hindsight text, meant as an auxiliary training *target*, never as an input (`scripts/annotate_samples.py`).
+  carrier goes, what it passes, avoids or waits for, whether it stops or turns), `place`, `interaction`, plus the
+  sample's `camera_prompt` (the same sentence as in `samples`). The text is hindsight: used as an auxiliary training
+  target (`--text-loss`) or, for the instruction-conditioned policy, as the task text in the prompt
+  (`--instruction description,place,interaction`), in which case the score measures text following
+  (`scripts/annotate_samples.py`).
 
 ## Descriptions (`annotations`)
 
