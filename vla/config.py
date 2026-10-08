@@ -31,6 +31,11 @@ class Config:
                                         # (past frames + the frame horizon_s ahead -> positions in time; cfg.frames
                                         # counts every image: past + now + final)
     horizon_s: float = 5.0              # final_frame: the final frame is this far ahead; `horizon` positions span it
+    final_image: bool = True            # final_frame: give the model the frame at the end of the horizon (False: past frames only)
+    min_path_m: float = 0.0             # final_frame: skip samples whose path over the horizon is shorter (0 = keep all)
+    min_net_m: float = 0.0              # final_frame: skip samples whose end point is closer than this to the start
+    instruction: str = ""               # final_frame: fields of the sample's annotation (description,place,interaction) written
+                                        # into the prompt as the task text; "" = none.  Needs data/annotations in the frames repo
     camera_prompt: bool = False         # final_frame: tell the model the camera's field of view and height from the stored
                                         # calibration (hnod.windows.camera_prompt); values we are not certain of are "unknown"
     stream: bool = False                # frames: stream shards from the Hub (bounded disk) instead of downloading the split

@@ -100,7 +100,11 @@ lidar-observed map cells (that rule removed most turns and stops, because the ce
 never observed; `map:partly_unknown` marks the affected scenarios, whose map-collision score is less reliable), and
 unreviewed scenarios take CLIP's environment label when it is confident (`env:by_clip`). v3 was not audited by eye.
 
-Both final-frame configs also hold `future_images`, the camera views at 1 Hz between now and the final frame.
+Both final-frame configs also hold `future_images` (the camera views at 1 Hz between now and the final frame) and
+the camera calibration for the prompt: `camera_height_m`, `camera_height_source` (`dataset` for CODa, JRDB and
+RoboSense from their extrinsics; `unknown` for MuSoHu, whose helmet height was estimated during conversion and is
+therefore not given to a model) and `camera_prompt`, the sentence a `--camera-prompt` policy reads (field of view from
+`K`; height or "unknown"). Nothing in it is estimated.
 
 On `v3_final_frame` the constant-velocity baseline reaches success 0.33 / completed 0.38 / collided 0.24 / ADE 0.84 m /
 FDE 1.92 m (on v2: 0.62 / 0.70 / 0.20 / 0.49 / 1.12), so v3 separates a policy from "keep going" far better.

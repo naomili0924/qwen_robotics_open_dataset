@@ -103,3 +103,41 @@ def test_camera_sentence_uses_stored_calibration_only_and_says_unknown_otherwise
     assert camera_prompt({}) == "The camera's field of view is unknown; its height above the ground is unknown."
     assert camera_prompt(cam) in embodiment_prompt("person_walking", camera=cam)
     assert "field of view" not in embodiment_prompt("person_walking")
+
+
+def test_instruction_policy_items_have_no_final_image_and_carry_the_task_text():
+    import numpy as np
+    from PIL import Image
+    from vla.config import Config
+    from vla.data import INSTRUCTION_SYSTEM, final_frame_item, instruction_text
+    ann = dict(description="The carrier walks to the glass door ahead and stops.", place="Office lobby", interaction="a person crossing")
+    text = instruction_text(ann, "description,place,interaction")
+    assert text == "Task: The carrier walks to the glass door ahead and stops. Place: Office lobby. Reacts to: a person crossing."
+    assert instruction_text(ann, "description") == "Task: The carrier walks to the glass door ahead and stops."
+    assert instruction_text(None, "description") == ""
+    cfg = Config(frames=7, horizon=10, horizon_s=5.0, past_dt_s=1.0, final_image=False, instruction="description")
+    imgs = [Image.new("RGB", (64, 48)) for _ in range(6)]
+    it = final_frame_item(imgs, None, "prompt " + text, cfg)
+    assert len(it["images"]) == 6 and it["image_tags"][-1] == "View now:" and "View in" not in " ".join(it["image_tags"])
+    assert it["system"] == INSTRUCTION_SYSTEM.format(h=5.0, n=10) and "Task:" in it["prompt"]
+    with_final = final_frame_item(imgs, Image.new("RGB", (64, 48)), "prompt", Config(frames=7, horizon=10, horizon_s=5.0, past_dt_s=1.0))
+    assert len(with_final["images"]) == 7 and with_final["image_tags"][-1] == "View in 5 s:"
+
+
+def test_motion_filters_are_chosen_per_run_and_measure_the_horizon():
+    import numpy as np
+    from datasets import Dataset
+    from hnod.windows import FrameWindows, WindowConfig
+    # 30 s at 10 Hz: standing for 15 s, then walking 1 m/s straight ahead
+    t = np.arange(300) / 10.0
+    x = np.where(t < 15, 0.0, t - 15)
+    rows = [dict(episode_id="e", frame_index=i, timestamp=float(t[i]), pose=[float(x[i]), 0.0, 0.0, 0.0]) for i in range(300)]
+    eps = [dict(episode_id="e", embodiment="person_walking")]
+    cfg = dict(mode="final_frame", horizon_s=5.0, n_waypoints=10, n_past=5, past_dt_s=1.0, stride=10)
+    every = FrameWindows(Dataset.from_list(rows), eps, WindowConfig(**cfg))
+    moving = FrameWindows(Dataset.from_list(rows), eps, WindowConfig(**cfg, min_path_m=2.0))
+    assert len(every) == 25                            # samples at 0, 1, ... 24 s (the horizon must fit)
+    starts = [float(t[i]) for i in moving.samples]
+    assert min(starts) == 12.0 and len(moving) == 13   # from 12 s on the next 5 s hold at least 2 m of walking
+    net = FrameWindows(Dataset.from_list(rows), eps, WindowConfig(**cfg, min_net_m=4.5))
+    assert [float(t[i]) for i in net.samples][0] == 15.0

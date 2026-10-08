@@ -35,7 +35,21 @@ def load_rows(args):
         d = snapshot_download(args.repo, repo_type="dataset", allow_patterns=[f"data/{args.version}/*"],
                               local_dir="/dev/shm/final_frame_eval/hub")
         files = sorted(glob.glob(f"{d}/data/{args.version}/test-*.parquet"))
-    return [r for f in files for r in pq.read_table(f).to_pylist()]
+    rows = [r for f in files for r in pq.read_table(f).to_pylist()]
+    # the scenarios' descriptions (config <suite>_annotations), for instruction-conditioned policies
+    ann_name = args.version.replace("_final_frame", "") + "_annotations"
+    if args.data:
+        ann_files = sorted(glob.glob(os.path.join(os.path.dirname(args.data.rstrip("/")), ann_name, "test-*.parquet")))
+    else:
+        from huggingface_hub import snapshot_download
+        d = snapshot_download(args.repo, repo_type="dataset", allow_patterns=[f"data/{ann_name}/*"], local_dir="/dev/shm/final_frame_eval/hub")
+        ann_files = sorted(glob.glob(f"{d}/data/{ann_name}/test-*.parquet"))
+    ann = {a["suite_id"]: a for f in ann_files for a in pq.read_table(f).to_pylist()}
+    for r in rows:
+        r["annotation"] = ann.get(r["suite_id"])
+    if ann:
+        print(f"{sum(r['annotation'] is not None for r in rows)} of {len(rows)} scenarios have a description", flush=True)
+    return rows
 
 
 def _img(cell):
@@ -49,8 +63,8 @@ def row_camera(r):
     return cam
 
 
-def build_items(rows, cfg, final="true", prompt="true", camera="true"):
-    from vla.data import final_frame_item
+def build_items(rows, cfg, final="true", prompt="true", camera="true", instruction="true"):
+    from vla.data import final_frame_item, instruction_text
     items = []
     for i, r in enumerate(rows):
         back = np.round(np.arange(cfg.frames - 2, -1, -1) * cfg.past_dt_s * r["rate_hz"]).astype(int)
@@ -68,8 +82,19 @@ def build_items(rows, cfg, final="true", prompt="true", camera="true"):
         cam = None
         if cfg.camera_prompt:  # "unknown": the sentence says field of view and height are unknown (does the model use it?)
             cam = row_camera(r) if camera == "true" else {}
-        items.append(final_frame_item(past, fin, embodiment_prompt(emb, cfg.past_dt_s, cfg.horizon, cfg.horizon_s, camera=cam),
-                                      cfg, index=i, scenario_id=r["suite_id"]))
+        text = embodiment_prompt(emb, cfg.past_dt_s, cfg.horizon, cfg.horizon_s, camera=cam)
+        if cfg.instruction:
+            if instruction == "true":
+                ann = r.get("annotation")
+            elif instruction == "swapped":  # another recording's text
+                j = next(k for k in list(range(i + 1, len(rows))) + list(range(i)) if rows[k]["sequence"] != r["sequence"])
+                ann = rows[j].get("annotation")
+            else:
+                ann = None
+            text = text + " " + instruction_text(ann, cfg.instruction)
+        if not cfg.final_image:
+            fin = None
+        items.append(final_frame_item(past, fin, text, cfg, index=i, scenario_id=r["suite_id"]))
     return items
 
 
@@ -115,8 +140,12 @@ def main():
         pipe = (NavigationPipeline.from_hub(args.hub_repo, args.checkpoint, args.revision, **opts) if args.hub_repo
                 else NavigationPipeline.from_pretrained(args.checkpoint, **opts))
         pipe.model.eval()
-        conditions = [("model", {}), ("model, swapped final frame", dict(final="swapped")),
-                      ("model, no final frame", dict(final="none")), ("model, swapped prompt", dict(prompt="swapped"))]
+        conditions = [("model", {})]
+        if pipe.cfg.final_image:
+            conditions += [("model, swapped final frame", dict(final="swapped")), ("model, no final frame", dict(final="none"))]
+        conditions.append(("model, swapped prompt", dict(prompt="swapped")))
+        if pipe.cfg.instruction:  # does the model read the task text?
+            conditions += [("model, swapped instruction", dict(instruction="swapped")), ("model, no instruction", dict(instruction="none"))]
         if pipe.cfg.camera_prompt:  # does the model use the calibration sentence?
             conditions.append(("model, unknown camera", dict(camera="unknown")))
         for name, kw in conditions:

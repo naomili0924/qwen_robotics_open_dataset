@@ -50,6 +50,8 @@ def main():
     ap.add_argument("--n", type=int, default=10)
     ap.add_argument("--mode", default="promising", choices=["promising", "failures", "random"])
     ap.add_argument("--out", default="/dev/shm/eval_examples.html")
+    ap.add_argument("--title", default="Final-frame model on v3")
+    ap.add_argument("--text-is-input", action="store_true", help="the description was the model's task text (instruction policies)")
     args = ap.parse_args()
     ev = json.load(open(args.eval))
     pred = ev["predictions"]["model"]
@@ -81,13 +83,13 @@ def main():
         picked.append(s); seen[s["motion"]] = seen.get(s["motion"], 0) + 1
         if len(picked) >= args.n:
             break
-    parts = ["<html><head><meta charset='utf-8'><title>ff3 on v3</title><style>body{font-family:sans-serif;margin:16px}"
+    parts = ["<html><head><meta charset='utf-8'><title>" + args.title + "</title><style>body{font-family:sans-serif;margin:16px}"
              ".s{border-top:1px solid #ccc;padding:12px 0}.f{display:flex;gap:3px;flex-wrap:wrap;align-items:flex-start}"
              ".f img{height:150px}.f .fin img{outline:3px solid #d33}.c{font-size:12px;color:#555}.d{max-width:1000px;margin-top:6px}"
              "table{border-collapse:collapse;font-size:12px}td,th{padding:2px 8px;border-bottom:1px solid #eee;text-align:right}</style></head><body>",
              f"<h2>{Path(args.eval).stem}: {args.mode} examples on {args.version}_final_frame "
              f"({len([s for s in scored if s['m']['success']])} of {len(scored)} completed; constant velocity {len([s for s in scored if s['cv']['success']])})</h2>",
-             "<p class='c'>Views: 1 Hz past, <b>now</b>, then the final view (red frame). Bird's-eye view: static map grey, people red with their "
+             "<p class='c'>" + ("The model saw the past views and now, plus the task text below; the final view (red frame) is shown for reference only. " if args.text_is_input else "") + "Views: 1 Hz past, <b>now</b>, then the final view (red frame). Bird's-eye view: static map grey, people red with their "
              "future tracks, recorded path green, <b>model red</b>, constant velocity dashed; x forward (up), y left.</p>"]
     for s in picked:
         r, p = s["row"], s["pred"]
@@ -110,7 +112,7 @@ def main():
             f"<table><tr><th></th><th>completed</th><th>collided</th><th>ADE</th><th>FDE</th></tr>"
             f"<tr><td>model</td><td>{'yes' if m['success'] else 'no'}</td><td>{'yes' if m['collided'] else 'no'}</td><td>{m['ade']:.2f}</td><td>{m['fde']:.2f}</td></tr>"
             f"<tr><td>constant velocity</td><td>{'yes' if cv['success'] else 'no'}</td><td>{'yes' if cv['collided'] else 'no'}</td><td>{cv['ade']:.2f}</td><td>{cv['fde']:.2f}</td></tr></table>"
-            f"<div class='d'><b>Description:</b> {a.get('description', '')}<br><span class='c'>place: {a.get('place', '')} · interaction: {a.get('interaction', '')}</span></div></div>")
+            f"<div class='d'><b>{'Task text given to the model' if args.text_is_input else 'Description'}:</b> {a.get('description', '')}<br><span class='c'>place: {a.get('place', '')} · interaction: {a.get('interaction', '')}</span></div></div>")
     Path(args.out).write_text("\n".join(parts) + "</body></html>")
     print(f"{len(picked)} examples -> {args.out}; motion classes: {seen}")
 

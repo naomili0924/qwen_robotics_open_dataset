@@ -46,6 +46,10 @@ class WindowConfig:
     mode: str = "prompt"             # prompt (goal in words / coordinates, waypoints by distance) | final_frame
     horizon_s: float = 5.0
     camera_prompt: bool = False  # final_frame: add the camera sentence (field of view, height or 'unknown') to the prompt
+    # final_frame: skip samples that barely move over the horizon (chosen per training run; 0 = keep all).  Measured
+    # on the target itself (n_waypoints positions in time), so they match the datasets' dist_m and net_m columns.
+    min_path_m: float = 0.0      # path length over the horizon (sum of the steps between target positions)
+    min_net_m: float = 0.0       # straight-line distance from now to the end of the horizon
 
 
 EMBODIMENT_TAGS = {"person_walking": "a human walking", "wheeled_robot": "a robot", "legged_robot": "a robot",
@@ -159,6 +163,10 @@ class FrameWindows:
             keep = (left >= need) | (at_rest & (left >= 0))
             if c.mode == "final_frame":  # the recording must continue for the whole horizon (standing still counts)
                 keep = self.t[b - 1] - self.t[rows] >= c.horizon_s - 1e-6
+                if (c.min_path_m > 0 or c.min_net_m > 0) and keep.any():
+                    path, net = self._motion_over_horizon(a, b, rows[keep])
+                    sub = (path >= c.min_path_m) & (net >= c.min_net_m)
+                    keep[np.flatnonzero(keep)[~sub]] = False
             prob = self.episodes.get(self.ep_ids[e], {}).get("frame_indoor_prob")
             if c.min_indoor_prob > 0 and prob is not None and len(prob) == b - a:
                 keep &= np.asarray(prob)[rows - a] >= c.min_indoor_prob
@@ -167,6 +175,15 @@ class FrameWindows:
                 keep &= np.array([(eid, int(r - a)) in self.allowed for r in rows], bool)
             out.append(rows[keep])
         return np.concatenate(out) if out else np.zeros(0, int)
+
+    def _motion_over_horizon(self, a, b, rows):
+        """Path length and straight-line distance of the camera over the horizon after each of `rows`."""
+        c, tt = self.cfg, self.t[a:b]
+        times = self.t[rows][:, None] + c.horizon_s * np.arange(0, c.n_waypoints + 1)[None] / c.n_waypoints
+        x = np.interp(times, tt, self.pose[a:b, 0])
+        y = np.interp(times, tt, self.pose[a:b, 1])
+        path = np.hypot(np.diff(x, axis=1), np.diff(y, axis=1)).sum(1)
+        return path, np.hypot(x[:, -1] - x[:, 0], y[:, -1] - y[:, 0])
 
     def __len__(self):
         return len(self.samples)

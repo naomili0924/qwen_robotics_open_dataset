@@ -32,7 +32,7 @@ class _Source:
         self.annotation_files = sorted(f for f in files if f.startswith(f"data/annotations/{split}-"))
         self.sizes = None  # frame counts, filled by load_episodes
         self.allowed = None
-        self.descriptions = {}  # (episode_id, frame_index) -> text, from data/annotations (scripts/annotate_samples.py)
+        self.descriptions = {}  # (episode_id, frame_index) -> {description, place, interaction}, from data/annotations
 
     def load_episodes(self):
         """All episode rows of the split (small), as a list of dicts."""
@@ -57,8 +57,10 @@ class _Source:
             with tempfile.TemporaryDirectory(dir=_tmp_root()) as d:
                 for f in self.annotation_files:
                     t = pq.read_table(hf_hub_download(self.repo, f, repo_type="dataset", local_dir=d),
-                                      columns=["episode_id", "frame_index", "description"]).to_pydict()
-                    self.descriptions.update({(e, i): s for e, i, s in zip(t["episode_id"], t["frame_index"], t["description"]) if s})
+                                      columns=["episode_id", "frame_index", "description", "place", "interaction"]).to_pydict()
+                    for e, i, s, pl, inter in zip(t["episode_id"], t["frame_index"], t["description"], t["place"], t["interaction"]):
+                        if s:
+                            self.descriptions[(e, i)] = dict(description=s, place=pl or "", interaction=inter or "")
         return rows
 
 

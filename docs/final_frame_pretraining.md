@@ -110,3 +110,59 @@ A model trained with `--camera-prompt` reads the camera sentence (`hnod.windows.
 stored intrinsics and the height above the ground when its source is the dataset's calibration or a simulator;
 otherwise "unknown". Never pass estimated values at inference. The watcher (`scripts/watch_checkpoints.py --suite
 v2_final_frame v3_final_frame`) uploads milestones and scores them on both suites.
+
+
+## Instruction-conditioned variant: run `ff4_lora4b_instruction` (started 2026-10-06 19:50 UTC)
+
+Same base model, LoRA and data as ff3, but the model gets **no final frame**: the inputs are the 5 past frames, the
+current frame and the sample's annotation written into the prompt as the task text (`Task: <description> Place:
+<place> Reacts to: <interaction>`), output the 10 positions. No camera sentence, no text loss. Validation items come
+from the training repo itself (it has no val split; the suites are the real test). Scored on `v2_final_frame` /
+`v3_final_frame` with their `*_annotations` as the task text; the input-use checks are "swapped instruction" (another
+scenario's text) and "no instruction". Note that the descriptions state the outcome ("turns right to ..."), so a high
+score shows the model follows the text, not that it navigates unaided.
+
+```bash
+. scripts/train_env.sh
+# start (or resume: the same command picks up <run>/last locally or from the Hub)
+bash scripts/run_ff.sh ff4_lora4b_instruction 3100 4b-lora --no-final-image --instruction description,place,interaction \
+  --text-loss 0 --frames-repos Jinyan0924/qwen_robotics_nav_pretrain_dedup \
+  --val-frames-repos Jinyan0924/qwen_robotics_nav_pretrain_dedup --val-split train --save-every 500 --eval-every 500
+# milestones every 1,000 steps, scored on both suites
+python scripts/watch_checkpoints.py --run /dev/shm/runs/ff4_lora4b_instruction --hub-repo Jinyan0924/qwen_robotics_nav_policy \
+  --milestones 1000,2000,3000 --every 100000 --suite v2_final_frame v3_final_frame --suite-data /dev/shm/final_frame_eval/{version}
+# the suites (with future views, camera columns and annotations) on a new machine:
+#   build_final_frame_eval.py --version v3 ; annotate_samples.py eval --version v3   (or download data/v3_final_frame,
+#   data/v3_annotations from the eval repo into /dev/shm/final_frame_eval/)
+```
+
+To start a later run from its weights: `--init-from hub:Jinyan0924/qwen_robotics_nav_policy/ff4_lora4b_instruction/step_3000`.
+
+
+## One command per run (2026-10-07)
+
+`scripts/launch_run.sh <run> <steps> <size> <recipe>` starts the training (resumable; re-running the same command
+resumes from `<run>/last`, locally or from the Hub) and the watcher that uploads a milestone every 1,000 steps and
+scores it on `v2_final_frame` and `v3_final_frame`. Recipes (`scripts/run_ff.sh`): `final_frame` (ff3 style),
+`instruction` (ff4: past frames + description / place / interaction, no final frame), `instruction_camera` (ff5: the
+same + the camera sentence). `scripts/fetch_eval_suites.sh` pulls the suites from the Hub on a new machine.
+
+```bash
+bash scripts/launch_run.sh ff4_lora4b_instruction 6200 4b-lora instruction                 # ff4
+bash scripts/launch_run.sh ff5_lora4b_instruction_camera 6200 4b-lora instruction_camera   # ff5 (ablation)
+DRY_RUN=1 bash scripts/run_ff.sh <run> <steps> 4b-lora instruction_camera                  # print the flags only
+```
+
+## Ablation queued: `ff5_lora4b_instruction_camera` (owner, 2026-10-06)
+
+Identical to ff4 (past frames + annotation text, no final frame, 6,200 steps) plus `--camera-prompt`: the prompt also
+states the camera's field of view and, when its source is the dataset's calibration or a simulator, its height above
+the ground; otherwise "unknown" (MuSoHu in the eval). Starts automatically when ff4 finishes
+(`/workspace/logs/launch_ff5.sh` on this machine; on a new machine run the command below). The eval adds the
+"unknown camera" condition: if the model uses the calibration, its predictions change when the sentence says unknown.
+
+```bash
+bash scripts/run_ff.sh ff5_lora4b_instruction_camera 6200 4b-lora --no-final-image --instruction description,place,interaction \
+  --camera-prompt --text-loss 0 --frames-repos Jinyan0924/qwen_robotics_nav_pretrain_dedup \
+  --val-frames-repos Jinyan0924/qwen_robotics_nav_pretrain_dedup --val-split train --save-every 500 --eval-every 500
+```

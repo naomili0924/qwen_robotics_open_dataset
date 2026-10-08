@@ -121,6 +121,25 @@ moves 2.6 m; without the final frame to 0.06; with the human / robot sentence sw
 (success 0.6, collided 0.1) are easier than walking-person ones (0.33, 0.29); indoor collisions with people are the
 weakest point.
 
+### Instruction-conditioned model (`ff4_lora4b_instruction/step_6000`)
+
+Same base, LoRA and data as ff3, but **no final frame**: the inputs are the past frames, the current frame and the
+sample's description / place / interaction as the task text (from the `annotations` table). No camera sentence.
+6,200 steps (two epochs).
+
+| | success | completed | collided | ADE (m) | FDE (m) |
+|---|---|---|---|---|---|
+| v3: constant velocity | 0.33 | 0.38 | 0.24 | 0.84 | 1.92 |
+| v3: ff3 final-frame step 4,000 | 0.43 | 0.54 | 0.27 | 0.70 | 1.25 |
+| **v3: ff4 step 6,000** | **0.56** | **0.69** | **0.21** | **0.53** | **0.82** |
+| v2: constant velocity | 0.62 | 0.70 | 0.20 | 0.49 | 1.12 |
+| **v2: ff4 step 6,000** | **0.66** | **0.75** | **0.15** | **0.44** | **0.76** |
+
+Without the text the v3 success is 0.20 and with another scenario's text 0.10: the model steers by the description,
+which states the outcome (e.g. "turns right to the entrance"), so these numbers measure text following plus
+avoidance from the images, not unaided navigation. `ff5_lora4b_instruction_camera` (in progress) adds the camera
+calibration sentence as an ablation.
+
 ### Goal-prompt baseline (`e1_all_sqrt/step_5000`)
 
 [Evaluation suite](https://huggingface.co/datasets/Jinyan0924/qwen_robotics_nav_eval): 150 audited scenarios;

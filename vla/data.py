@@ -21,6 +21,22 @@ FINAL_FRAME_SYSTEM = ("You watch a camera carried through the world by a human o
                       "view: first the past, oldest first, then the view now, then the view at the end of the next "
                       "{h:g} seconds. Predict where the camera is at {n} moments evenly spaced over those {h:g} seconds, "
                       "in metres relative to its position now: x forward, y left.")
+INSTRUCTION_SYSTEM = ("You watch a camera carried through the world by a human or a robot. The images are its front "
+                      "view: first the past, oldest first, then the view now. A text says what the carrier does during "
+                      "the next {h:g} seconds. Predict where the camera is at {n} moments evenly spaced over those "
+                      "{h:g} seconds, in metres relative to its position now: x forward, y left.")
+INSTRUCTION_LABELS = {"description": "Task", "place": "Place", "interaction": "Reacts to"}
+
+
+def instruction_text(annotation, fields):
+    """The annotation fields named in `fields` (comma-separated) as the task text, e.g. 'Task: ... Place: ... Reacts to: ...'."""
+    parts = []
+    for f in [x.strip() for x in fields.split(",") if x.strip()]:
+        v = (annotation or {}).get(f, "")
+        if v:
+            v = v.strip().rstrip(".")
+            parts.append(f"{INSTRUCTION_LABELS.get(f, f.capitalize())}: {v}.")
+    return " ".join(parts)
 
 
 def load_split(cfg, split, columns=None):
@@ -105,6 +121,7 @@ def window_config(cfg):
     from hnod.windows import WindowConfig
     if cfg.window_mode == "final_frame":
         return WindowConfig(mode="final_frame", camera_prompt=cfg.camera_prompt, horizon_s=cfg.horizon_s, n_waypoints=cfg.horizon,
+                            min_path_m=cfg.min_path_m, min_net_m=cfg.min_net_m,
                             n_past=cfg.frames - 2, past_dt_s=cfg.past_dt_s, min_indoor_prob=cfg.min_indoor_prob,
                             seed=cfg.seed)
     return WindowConfig(n_waypoints=cfg.horizon, spacing_m=cfg.spacing_m, n_past=CURRENT, past_dt_s=cfg.past_dt_s,
@@ -154,13 +171,20 @@ def final_frame_tags(n_images, cfg):
 
 
 def final_frame_item(images, final_image, prompt, cfg, target=None, index=0, scenario_id="0"):
-    """Item for the final-frame task: images + embodiment sentence only (no positions, speed or goal numbers)."""
+    """Item for the final-frame task: images + embodiment sentence (no positions, speed or goal numbers).
+    final_image None (cfg.final_image False): past views and the current one only; the task text in `prompt`
+    (cfg.instruction) is then the only information about the future."""
     imgs = [im.convert("RGB") for im in images][-(cfg.frames - 1):]
-    imgs = [imgs[0]] * (cfg.frames - 1 - len(imgs)) + imgs + [final_image.convert("RGB")]
+    imgs = [imgs[0]] * (cfg.frames - 1 - len(imgs)) + imgs
+    if final_image is not None:
+        imgs = imgs + [final_image.convert("RGB")]
+        tags, system = final_frame_tags(len(imgs), cfg), FINAL_FRAME_SYSTEM
+    else:
+        tags, system = final_frame_tags(len(imgs) + 1, cfg)[:-1], INSTRUCTION_SYSTEM
     if target is None:
         target = np.zeros((cfg.horizon, cfg.action_dim), np.float32)
-    return dict(index=index, scenario_id=scenario_id, images=imgs, image_tags=final_frame_tags(len(imgs), cfg),
-                system=FINAL_FRAME_SYSTEM.format(h=cfg.horizon_s, n=cfg.horizon), prompt=prompt,
+    return dict(index=index, scenario_id=scenario_id, images=imgs, image_tags=tags,
+                system=system.format(h=cfg.horizon_s, n=cfg.horizon), prompt=prompt,
                 kin=np.zeros(KIN_DIM, np.float32), target=np.asarray(target, np.float32), aux={})
 
 
@@ -168,11 +192,15 @@ def frame_item(windows, k, cfg, index=0):
     """One training item (NavDataset layout) for sample k of a hnod.windows.FrameWindows."""
     s = windows[k]
     if "final_image" in s:
-        item = final_frame_item(s["images"], s["final_image"], s["prompt"], cfg,
+        ann = getattr(windows, "descriptions", {}).get((s["episode_id"], s["frame_index"]))
+        prompt = s["prompt"]
+        if cfg.instruction:  # the annotation as the task text (an instruction-conditioned policy)
+            prompt = prompt + " " + instruction_text(ann, cfg.instruction)
+        item = final_frame_item(s["images"], s["final_image"] if cfg.final_image else None, prompt, cfg,
                                 target=s["target"][:, :cfg.action_dim] / cfg.action_scale, index=index,
                                 scenario_id=f"{s['episode_id']}:{s['frame_index']}")
-        if cfg.text_loss:  # the sample's description (hindsight text) is a training target, never an input
-            item["description"] = getattr(windows, "descriptions", {}).get((s["episode_id"], s["frame_index"]), "")
+        if cfg.text_loss:  # the sample's description (hindsight text) as a training target
+            item["description"] = (ann or {}).get("description", "")
         return item
     goal = s["goal"] if s["goal_given"] else np.zeros(2, np.float32)
     kin = np.r_[s["past_xy"].ravel(), s["velocity"], goal].astype(np.float32)

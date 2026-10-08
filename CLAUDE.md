@@ -118,8 +118,29 @@ end to end on a sample first, then discuss scale (more GPUs may be rented).
   height above the ground to the embodiment sentence, **from stored calibration only**; an estimated or missing value is
   written as "unknown" (MuSoHu's helmet height was estimated from the lidar and is therefore unknown to the model).
   Tables carry `camera.height_source` (episodes), `camera_prompt` (dedup samples, final-frame eval configs). Not yet used
-  by a trained run. Next planned run (ff4, not started): from ff3's weights, `--camera-prompt`, plus instruction
-  conditioning (descriptions rewritten into motion-free instructions) mixed with the final frame.
+  by a trained run.
+- **Finished 10:07 UTC 2026-10-07: `ff4_lora4b_instruction`** (6,200 steps; final on v3 success 0.56 / completed 0.69 /
+  collided 0.21 / ADE 0.53 / FDE 0.82, on v2 0.66 / 0.75 / 0.15 / 0.44 / 0.76; `best` = step 5,500 by val loss;
+  `step_6000` and `last` on the Hub). Still improving slowly at the end (5,000 -> 6,000: +0.03 success on v3), so a
+  continuation with a fresh schedule from `step_6000` is an option. **`ff5_lora4b_instruction_camera`** (= ff4 +
+  `--camera-prompt`, 6,200 steps, 10:08 UTC 2026-10-07 to about 00:40 UTC 2026-10-08): at step 6,000 on v3 0.57 / 0.71 /
+  0.21 / 0.53 / 0.82, equal to ff4; replacing the camera sentence with "unknown" changes nothing, so the model does
+  not use it (owner: fine, no debugging). `best` = step 5,500. Details of ff4 (started 19:50 UTC
+  2026-10-06, owner's request): same base, LoRA and data as
+  ff3, **no final frame**; the annotation (description, place, interaction) is the task text in the prompt
+  (`--no-final-image --instruction description,place,interaction`). Extended to 6,200 steps (two epochs, restarted from
+  step 1,000 with the longer schedule), milestones every 1,000 scored on v2 and v3 with their annotations. At step
+  1,000: v3 success 0.41 / completed 0.56 / ADE 0.67 / FDE 1.03; flat at 2,000, then climbing: **step 4,000 on v3
+  success 0.55 / completed 0.67 / collided 0.21 / ADE 0.58 / FDE 0.89** (best of any run; ff3@4,000: 0.43 / 0.54 /
+  0.27 / 0.70 / 1.25), on v2 0.63 / 0.73 / 0.15 / 0.48 / 0.78 (beats constant velocity there too). Without the text:
+  v3 success 0.20, so the score measures text following; collisions did improve (0.26 -> 0.21). Still improving at
+  5,000 (v2 0.64 / 0.74 / 0.15 / 0.44 / 0.77).
+- **One command per run (owner, 2026-10-07):** `bash scripts/launch_run.sh <run> <steps> <size> <recipe>` = training +
+  watcher; recipes `final_frame` / `instruction` (ff4) / `instruction_camera` (ff5, the only change is
+  `--camera-prompt`). ff5 is launched this way automatically after ff4 (`/workspace/logs/launch_ff5.sh`). **Queued after it: `ff5_lora4b_instruction_camera`** = ff4 + `--camera-prompt` (ablation, auto-start
+  via `/workspace/logs/launch_ff5.sh`). Exact commands and how to resume:
+  `docs/final_frame_pretraining.md`, "Instruction-conditioned variant". Caveat: the text states the outcome, so the
+  score measures text following; a motion-free rewrite of the descriptions would be the stricter test.
 - **Eval v3 (2026-10-06):** `v3_final_frame` = 132 motion-diverse real scenarios (`scripts/build_eval_v3.py`,
   `docs/eval_audit_v3.json`); v2 was two thirds straight. Constant velocity on v3: success 0.33, ADE 0.84, FDE 1.92.
   ff3 at step 3,500 on v3: success 0.41, completed 0.42, collided 0.24, ADE 0.75, FDE 1.32 - the first run that beats
@@ -137,6 +158,21 @@ end to end on a sample first, then discuss scale (more GPUs may be rented).
 - **Machine notes:** root disk is 32 GB and nearly full (model caches); run directories and downloads go to
   `/dev/shm`. The flash-attention kernel cannot load from `/dev/shm` (noexec), so `HF_HOME` stays on the root disk.
 
+## Indoor Aria data (2026-10-07, private, Meta non-commercial licence: never make public)
+
+Built by the separate private repo github.com/naomili0924/room_to_room_navigation (read its `HANDOFF.md`): Meta's Aria
+Everyday Activities + Aria Digital Twin, head-worn fisheye camera, 379 recordings in 5 homes + 2 ADT spaces.
+- `Jinyan0924/qwen_robotics_nav_pretrain_dedup_indoor`: 9,890 deduplicated samples (7 views), plus `annotations`
+  = Claude Haiku 4.5 navigation instructions per clip (`instruction`, `short`, `goal`, `landmarks`; $24.63; 31% are
+  "Stay ..." clips where the wearer barely moves).
+- `Jinyan0924/qwen_robotics_nav_indoor_clips`: 11 views per sample (t-5 ... t+5 s), all 44,731 candidates of every
+  split (`samples`, with `split`, `dist_m`, `net_m`, `bucket`, `view_poses`) and `samples_dedup` (the same 9,890).
+- No motion filter is baked into the data (owner): choose it at training time, `--min-path-m` / `--min-net-m`.
+- Fisheye: use the stored `camera_prompt`; `hnod.windows.camera_prompt` assumes a pinhole.
+- Point-cloud obstacle maps (for a future eval) were tested and work for walls and furniture, but the semi-dense
+  points also put false obstacles along the walked path; not needed for training (owner), revisit for evaluation.
+- Possible next run: an instruction-conditioned model on these indoor instructions (not started).
+
 ## Source status
 
 - CODa, RoboSense, JRDB: converted and published. JRDB came from the Stanford mirror with the owner's
@@ -144,7 +180,11 @@ end to end on a sample first, then discuss scale (more GPUs may be rented).
 - RoboSense has no test split (source test labels are withheld); the owner declined re-splitting.
 - SiT: blocked. The download needs the owner to sign the authors' terms form, and the licence statements
   conflict (ND vs SA); confirm with the authors before publishing converted data.
-- SCAND, MuSoHu: no object tracks, so not usable as collision ground truth.
+- MuSoHu (helmet-worn camera + lidar, people walks in malls and campus buildings): converted (`scripts/convert_musohu.py`,
+  people tracked in the lidar), published as `qwen_robotics_open_dataset_musohu`, **reserved for evaluation** (75 of
+  the 132 v3 and 74 of the 134 v2 final-frame scenarios). The owner calls it highly relevant to the task: keep it in
+  every eval version; if it is ever wanted for training, split recordings first so none appears on both sides. Its
+  helmet height is estimated, so the camera prompt says "unknown" for it. SCAND: no object tracks, not converted.
 - Habitat + HSSD point-goal: 113 of 168 houses generated with `scripts/generate_habitat_pointnav.py` and
   published (see the state section). HM3D is now accessible too (token works).
 - HM3D, MP3D (VLN-CE, object-goal), nuScenes: wait for the owner's credentials (instructions were given
