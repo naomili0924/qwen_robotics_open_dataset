@@ -122,8 +122,10 @@ end to end on a sample first, then discuss scale (more GPUs may be rented).
 - **Finished 10:07 UTC 2026-10-07: `ff4_lora4b_instruction`** (6,200 steps; final on v3 success 0.56 / completed 0.69 /
   collided 0.21 / ADE 0.53 / FDE 0.82, on v2 0.66 / 0.75 / 0.15 / 0.44 / 0.76; `best` = step 5,500 by val loss;
   `step_6000` and `last` on the Hub). Still improving slowly at the end (5,000 -> 6,000: +0.03 success on v3), so a
-  continuation with a fresh schedule from `step_6000` is an option. **Running since 10:08 UTC: `ff5_lora4b_instruction_camera`**
-  (= ff4 + `--camera-prompt`, 6,200 steps, launched by `scripts/launch_run.sh`). Details of ff4 (started 19:50 UTC
+  continuation with a fresh schedule from `step_6000` is an option. **`ff5_lora4b_instruction_camera`** (= ff4 +
+  `--camera-prompt`, 6,200 steps, 10:08 UTC 2026-10-07 to about 00:40 UTC 2026-10-08): at step 6,000 on v3 0.57 / 0.71 /
+  0.21 / 0.53 / 0.82, equal to ff4; replacing the camera sentence with "unknown" changes nothing, so the model does
+  not use it (owner: fine, no debugging). `best` = step 5,500. Details of ff4 (started 19:50 UTC
   2026-10-06, owner's request): same base, LoRA and data as
   ff3, **no final frame**; the annotation (description, place, interaction) is the task text in the prompt
   (`--no-final-image --instruction description,place,interaction`). Extended to 6,200 steps (two epochs, restarted from
@@ -155,6 +157,21 @@ end to end on a sample first, then discuss scale (more GPUs may be rented).
   descriptions, a bigger GPU for the 4B without checkpointing); multi-GPU training is not implemented.
 - **Machine notes:** root disk is 32 GB and nearly full (model caches); run directories and downloads go to
   `/dev/shm`. The flash-attention kernel cannot load from `/dev/shm` (noexec), so `HF_HOME` stays on the root disk.
+
+## Indoor Aria data (2026-10-07, private, Meta non-commercial licence: never make public)
+
+Built by the separate private repo github.com/naomili0924/room_to_room_navigation (read its `HANDOFF.md`): Meta's Aria
+Everyday Activities + Aria Digital Twin, head-worn fisheye camera, 379 recordings in 5 homes + 2 ADT spaces.
+- `Jinyan0924/qwen_robotics_nav_pretrain_dedup_indoor`: 9,890 deduplicated samples (7 views), plus `annotations`
+  = Claude Haiku 4.5 navigation instructions per clip (`instruction`, `short`, `goal`, `landmarks`; $24.63; 31% are
+  "Stay ..." clips where the wearer barely moves).
+- `Jinyan0924/qwen_robotics_nav_indoor_clips`: 11 views per sample (t-5 ... t+5 s), all 44,731 candidates of every
+  split (`samples`, with `split`, `dist_m`, `net_m`, `bucket`, `view_poses`) and `samples_dedup` (the same 9,890).
+- No motion filter is baked into the data (owner): choose it at training time, `--min-path-m` / `--min-net-m`.
+- Fisheye: use the stored `camera_prompt`; `hnod.windows.camera_prompt` assumes a pinhole.
+- Point-cloud obstacle maps (for a future eval) were tested and work for walls and furniture, but the semi-dense
+  points also put false obstacles along the walked path; not needed for training (owner), revisit for evaluation.
+- Possible next run: an instruction-conditioned model on these indoor instructions (not started).
 
 ## Source status
 
