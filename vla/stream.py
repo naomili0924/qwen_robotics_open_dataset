@@ -21,8 +21,23 @@ from torch.utils.data import IterableDataset, get_worker_info
 from hnod.windows import FrameWindows
 
 
+ANNOTATION_FIELDS = ("description", "place", "interaction", "instruction", "short", "goal")  # whichever a repo has
+
+
+def holdout_key(episode):
+    """Group of an episode for holding out: recordings made together (two Aria wearers, the rule of the Aria build)
+    or the simulated scene share a key, so a group lies wholly on one side."""
+    ds, seq = episode.get("dataset", ""), episode.get("source_sequence") or episode["episode_id"]
+    if ds == "aea":
+        return seq.rsplit("_rec", 1)[0]
+    if ds == "adt":
+        return seq.rsplit("_", 1)[0]
+    return seq
+
+
 class _Source:
-    def __init__(self, repo, split):
+    def __init__(self, repo, split, holdout=None):
+        """holdout: optional (fraction, role, seed); role "train" drops the held-out groups, "val" keeps only them."""
         from huggingface_hub import HfApi
         files = HfApi(token=os.environ.get("HF_TOKEN")).list_repo_files(repo, repo_type="dataset")
         self.repo = repo
@@ -30,9 +45,11 @@ class _Source:
         self.episode_files = sorted(f for f in files if f.startswith(f"data/episodes/{split}-"))
         self.sample_files = sorted(f for f in files if f.startswith(f"data/samples/{split}-"))  # a published sample list
         self.annotation_files = sorted(f for f in files if f.startswith(f"data/annotations/{split}-"))
+        self.holdout = holdout
         self.sizes = None  # frame counts, filled by load_episodes
         self.allowed = None
-        self.descriptions = {}  # (episode_id, frame_index) -> {description, place, interaction}, from data/annotations
+        self.descriptions = {}  # (episode_id, frame_index) -> annotation fields (ANNOTATION_FIELDS), from data/annotations
+        self.camera_prompts = {}  # (episode_id, frame_index) -> the camera sentence stored with the sample
 
     def load_episodes(self):
         """All episode rows of the split (small), as a list of dicts."""
@@ -49,18 +66,36 @@ class _Source:
             allowed = set()
             with tempfile.TemporaryDirectory(dir=_tmp_root()) as d:
                 for f in self.sample_files:
-                    t = pq.read_table(hf_hub_download(self.repo, f, repo_type="dataset", local_dir=d), columns=["episode_id", "frame_index"])
-                    allowed |= set(zip(t.column("episode_id").to_pylist(), t.column("frame_index").to_pylist()))
+                    p = hf_hub_download(self.repo, f, repo_type="dataset", local_dir=d)
+                    cols = [c for c in ["episode_id", "frame_index", "camera_prompt"] if c in pq.read_schema(p).names]
+                    t = pq.read_table(p, columns=cols).to_pydict()
+                    keys = list(zip(t["episode_id"], t["frame_index"]))
+                    allowed |= set(keys)
+                    for k, cp in zip(keys, t.get("camera_prompt") or []):
+                        if cp:
+                            self.camera_prompts[k] = cp
             self.allowed = allowed
             self.sizes = len(allowed)
+        if self.holdout and self.holdout[0] > 0:
+            assert self.allowed is not None, f"{self.repo}: holding out needs a published sample list (data/samples)"
+            frac, role, seed = self.holdout
+            groups = sorted({holdout_key(r) for r in rows})
+            n_out = max(1, round(frac * len(groups)))
+            out = set(np.random.default_rng(seed).permutation(groups)[:n_out].tolist())
+            held = {r["episode_id"] for r in rows if holdout_key(r) in out}
+            self.allowed = {k for k in self.allowed if (k[0] in held) == (role == "val")}
+            self.sizes = len(self.allowed)
+            print(f"{self.repo}: {role} uses {len(self.allowed)} samples ({n_out} of {len(groups)} groups held out)", flush=True)
         if self.annotation_files:
             with tempfile.TemporaryDirectory(dir=_tmp_root()) as d:
                 for f in self.annotation_files:
-                    t = pq.read_table(hf_hub_download(self.repo, f, repo_type="dataset", local_dir=d),
-                                      columns=["episode_id", "frame_index", "description", "place", "interaction"]).to_pydict()
-                    for e, i, s, pl, inter in zip(t["episode_id"], t["frame_index"], t["description"], t["place"], t["interaction"]):
-                        if s:
-                            self.descriptions[(e, i)] = dict(description=s, place=pl or "", interaction=inter or "")
+                    p = hf_hub_download(self.repo, f, repo_type="dataset", local_dir=d)
+                    fields = [c for c in ANNOTATION_FIELDS if c in pq.read_schema(p).names]
+                    t = pq.read_table(p, columns=["episode_id", "frame_index"] + fields).to_pydict()
+                    for j, key in enumerate(zip(t["episode_id"], t["frame_index"])):
+                        ann = {c: t[c][j] or "" for c in fields}
+                        if any(ann.values()):
+                            self.descriptions[key] = ann
         return rows
 
 
@@ -95,8 +130,8 @@ class StreamFrames(IterableDataset):
     """
 
     def __init__(self, repos, split, window_cfg, item_fn, mix="equal", buffer_shards=1, seed=0, finite=False,
-                 max_items=0):
-        self.sources = [s for s in (_Source(r, split) for r in repos) if s.frames]
+                 max_items=0, holdout=None):
+        self.sources = [s for s in (_Source(r, split, holdout) for r in repos) if s.frames]
         self.episodes = {s.repo: s.load_episodes() for s in self.sources}
         sizes = np.array([s.sizes for s in self.sources], float)
         w = {"equal": np.ones(len(sizes)), "sqrt": np.sqrt(sizes), "proportional": sizes}[mix]
@@ -113,6 +148,7 @@ class StreamFrames(IterableDataset):
         ds = read_shard(src.repo, path)
         win = FrameWindows(ds, self.episodes[src.repo], self.window_cfg, allowed=src.allowed)
         win.descriptions = src.descriptions
+        win.camera_prompts = src.camera_prompts
         return win
 
     def __iter__(self):
@@ -123,7 +159,8 @@ class StreamFrames(IterableDataset):
         # this worker's shards of every source; a source with fewer shards than workers is shared
         mine = []
         for s in self.sources:
-            own = s.frames[wid::nw] or [s.frames[wid % len(s.frames)]]
+            # a single pass must not repeat a shard another worker already reads
+            own = s.frames[wid::nw] or ([] if self.finite else [s.frames[wid % len(s.frames)]])
             mine.append(list(own))
         if self.finite:
             yield from self._single_pass(mine)
@@ -158,12 +195,16 @@ class StreamFrames(IterableDataset):
         return q
 
     def _single_pass(self, mine):
-        n = 0
+        # every source gets an equal share of max_items, so a later source is not crowded out by the first
+        quota = -(-self.max_items // len(self.sources)) if self.max_items else 0
         for src, own in zip(self.sources, mine):
+            n = 0
             for path in own:
                 win = self._windows(src, path)
                 for k in range(0, len(win), max(1, self.window_cfg.stride)):
                     yield self.item_fn(win, k)
                     n += 1
-                    if self.max_items and n >= self.max_items:
-                        return
+                    if quota and n >= quota:
+                        break
+                if quota and n >= quota:
+                    break

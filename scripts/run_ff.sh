@@ -12,6 +12,9 @@
 #   instruction         past frames + the sample's description / place / interaction as the task text, no final
 #                       frame, the dedup repo (run ff4)
 #   instruction_camera  the same plus the camera sentence from the stored calibration (--camera-prompt; run ff5)
+#   indoor_instruction_camera  ff5's recipe on the private indoor sets (Aria + HM3D, 6 views, navigation instruction
+#                       as the task text, stored camera sentence); 5 % of recordings / houses held out for
+#                       validation; checkpoints go to a private model repo (the data's licences forbid redistribution)
 # One command for a whole run with its watcher: scripts/launch_run.sh.
 #
 # 2b = Qwen/Qwen3.5-2B-Base: one 94 GB H100, batch 16, about 4 samples/s (gradient checkpointing, 39 GB).
@@ -24,12 +27,14 @@ cd "$(dirname "$0")/.."
 export HF_HUB_CACHE=${HF_HUB_CACHE:-/dev/shm/hf_hub}   # base-model weights on the RAM disk (the root disk is small)
 RUN=${1:?run name}; STEPS=${2:?steps}; SIZE=${3:?2b|4b}; shift 3
 RECIPE=final_frame
-case ${1:-} in final_frame|instruction|instruction_camera) RECIPE=$1; shift ;; esac
+case ${1:-} in final_frame|instruction|instruction_camera|indoor_instruction_camera) RECIPE=$1; shift ;; esac
 DEDUP=Jinyan0924/qwen_robotics_nav_pretrain_dedup
+INDOOR=Jinyan0924/qwen_robotics_nav_pretrain_dedup_indoor,Jinyan0924/hm3d_nav_instruction_clips
 case $RECIPE in
   final_frame) TASK="--frames-repos $TRAIN_REPOS --frames-mix sqrt" ;;
   instruction) TASK="--frames-repos $DEDUP --val-frames-repos $DEDUP --val-split train --no-final-image --instruction description,place,interaction --text-loss 0" ;;
   instruction_camera) TASK="--frames-repos $DEDUP --val-frames-repos $DEDUP --val-split train --no-final-image --instruction description,place,interaction --text-loss 0 --camera-prompt" ;;
+  indoor_instruction_camera) TASK="--frames-repos $INDOOR --val-frames-repos $INDOOR --val-split train --holdout-frac 0.05 --no-final-image --instruction instruction --text-loss 0 --camera-prompt --hub-repo Jinyan0924/qwen_robotics_nav_policy_indoor" ;;
 esac
 echo "run $RUN: $STEPS steps, $SIZE, recipe $RECIPE"
 case $SIZE in

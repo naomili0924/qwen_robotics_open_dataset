@@ -46,6 +46,7 @@ class WindowConfig:
     mode: str = "prompt"             # prompt (goal in words / coordinates, waypoints by distance) | final_frame
     horizon_s: float = 5.0
     camera_prompt: bool = False  # final_frame: add the camera sentence (field of view, height or 'unknown') to the prompt
+    final_image: bool = True     # final_frame: load the frame at the end of the horizon (False: it may not be stored)
     # final_frame: skip samples that barely move over the horizon (chosen per training run; 0 = keep all).  Measured
     # on the target itself (n_waypoints positions in time), so they match the datasets' dist_m and net_m columns.
     min_path_m: float = 0.0      # path length over the horizon (sum of the steps between target positions)
@@ -267,11 +268,14 @@ class FrameWindows:
         wxy, wyaw = to_frame(p0, xy, yaw)
         j = a + int(np.argmin(np.abs(tt - (t0 + c.horizon_s))))  # the frame nearest the end of the horizon
         embodiment = ep.get("embodiment", "") or ""
+        prompt = embodiment_prompt(embodiment, c.past_dt_s, c.n_waypoints, c.horizon_s,
+                                   camera=(ep.get("camera") or {}) if c.camera_prompt else None)
+        stored = getattr(self, "camera_prompts", {}).get((str(self.ep_ids[e]), int(i - a)))
+        if c.camera_prompt and stored:  # the sentence published with the sample (right for fisheye lenses, unlike K)
+            prompt = embodiment_prompt(embodiment, c.past_dt_s, c.n_waypoints, c.horizon_s) + " " + stored
         return dict(row=i, episode_id=str(self.ep_ids[e]), frame_index=int(i - a), history_rows=rows,
                     final_row=j, final_dt_s=float(self.t[j] - t0), target=np.c_[wxy, wyaw].astype(np.float32),
-                    embodiment=embodiment, task="final_frame",
-                    prompt=embodiment_prompt(embodiment, c.past_dt_s, c.n_waypoints, c.horizon_s,
-                                             camera=(ep.get("camera") or {}) if c.camera_prompt else None),
+                    embodiment=embodiment, task="final_frame", prompt=prompt,
                     dataset=ep.get("dataset", ""), rate_hz=float(ep.get("rate_hz", 0) or 0))
 
     def images(self, rows, column="image"):
@@ -285,7 +289,9 @@ class FrameWindows:
 
     def __getitem__(self, k):
         out = self.sample(k)
-        if "final_row" in out:  # history (oldest first, the last is now) then the final frame
+        if "final_row" in out and not self.cfg.final_image:  # past frames only; the final one may not be stored
+            out["images"], out["final_image"] = self.images(out["history_rows"]), None
+        elif "final_row" in out:  # history (oldest first, the last is now) then the final frame
             imgs = self.images(np.r_[out["history_rows"], out["final_row"]])
             out["images"], out["final_image"] = imgs[:-1], imgs[-1]
         else:

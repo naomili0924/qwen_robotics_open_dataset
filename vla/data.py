@@ -25,7 +25,8 @@ INSTRUCTION_SYSTEM = ("You watch a camera carried through the world by a human o
                       "view: first the past, oldest first, then the view now. A text says what the carrier does during "
                       "the next {h:g} seconds. Predict where the camera is at {n} moments evenly spaced over those "
                       "{h:g} seconds, in metres relative to its position now: x forward, y left.")
-INSTRUCTION_LABELS = {"description": "Task", "place": "Place", "interaction": "Reacts to"}
+INSTRUCTION_LABELS = {"description": "Task", "place": "Place", "interaction": "Reacts to",
+                      "instruction": "Task"}  # the indoor sets' navigation instruction, in ff4/ff5's "Task:" slot
 
 
 def instruction_text(annotation, fields):
@@ -120,7 +121,8 @@ class NavDataset(Dataset):
 def window_config(cfg):
     from hnod.windows import WindowConfig
     if cfg.window_mode == "final_frame":
-        return WindowConfig(mode="final_frame", camera_prompt=cfg.camera_prompt, horizon_s=cfg.horizon_s, n_waypoints=cfg.horizon,
+        return WindowConfig(mode="final_frame", camera_prompt=cfg.camera_prompt, final_image=cfg.final_image,
+                            horizon_s=cfg.horizon_s, n_waypoints=cfg.horizon,
                             min_path_m=cfg.min_path_m, min_net_m=cfg.min_net_m,
                             n_past=cfg.frames - 2, past_dt_s=cfg.past_dt_s, min_indoor_prob=cfg.min_indoor_prob,
                             seed=cfg.seed)
@@ -225,11 +227,14 @@ def stream_frames(cfg, split, finite=False, max_items=0, repos=None):
     import dataclasses
     from vla.stream import StreamFrames
     wcfg = window_config(cfg)
-    if finite:
+    holdout = None
+    if cfg.holdout_frac > 0:  # validation = the held-out recordings / scenes of the training repos
+        holdout = (cfg.holdout_frac, "val" if finite else "train", cfg.seed)
+    elif finite:
         wcfg = dataclasses.replace(wcfg, stride=10)  # validation: spread a fixed number of items over episodes
     repos = [r.strip() for r in (repos or cfg.frames_repos).split(",") if r.strip()]
     return StreamFrames(repos, split, wcfg, _StreamItem(cfg), mix=cfg.frames_mix, seed=cfg.seed, finite=finite,
-                        max_items=max_items)
+                        max_items=max_items, holdout=holdout)
 
 
 def fit_action_scale_stream(stream, cfg, per_source=256):
