@@ -34,12 +34,15 @@ class Config:
     final_image: bool = True            # final_frame: give the model the frame at the end of the horizon (False: past frames only)
     min_path_m: float = 0.0             # final_frame: skip samples whose path over the horizon is shorter (0 = keep all)
     min_net_m: float = 0.0              # final_frame: skip samples whose end point is closer than this to the start
-    instruction: str = ""               # final_frame: fields of the sample's annotation (description,place,interaction) written
-                                        # into the prompt as the task text; "" = none.  Needs data/annotations in the frames repo
+    instruction: str = ""               # final_frame: fields of the sample's annotation (description,place,interaction, or
+                                        # instruction for the indoor sets) written into the prompt as the task text; "" = none.
+                                        # Needs data/annotations in the frames repo
     camera_prompt: bool = False         # final_frame: tell the model the camera's field of view and height from the stored
                                         # calibration (hnod.windows.camera_prompt); values we are not certain of are "unknown"
     stream: bool = False                # frames: stream shards from the Hub (bounded disk) instead of downloading the split
     val_items: int = 256                # stream: validation items (a single pass, spread over episodes)
+    holdout_frac: float = 0.0           # stream: hold out this share of each repo's recordings / scenes (vla.stream.holdout_key)
+                                        # from training and validate on them; for repos with only a train split
     # --- model
     backbone: str = "Qwen/Qwen2.5-VL-3B-Instruct"
     backbone_mode: str = "lora"         # frozen | lora | full

@@ -171,7 +171,22 @@ Everyday Activities + Aria Digital Twin, head-worn fisheye camera, 379 recording
 - Fisheye: use the stored `camera_prompt`; `hnod.windows.camera_prompt` assumes a pinhole.
 - Point-cloud obstacle maps (for a future eval) were tested and work for walls and furniture, but the semi-dense
   points also put false obstacles along the walked path; not needed for training (owner), revisit for evaluation.
-- Possible next run: an instruction-conditioned model on these indoor instructions (not started).
+- **2026-10-08 (owner): the policy never sees the t+5 s view.** Input = 5 past views at 1 Hz + current view + instruction.
+  Both indoor sets now have 6-view `image_frames`, and unused t+5 s images were dropped from `frames`. The Aria
+  `annotations` were rewritten with Claude Haiku 5.5 from all 11 views: navigation only, "stay" only below 0.3 m net,
+  and `raw.case` visible / history / unseen
+  (`tools/annotate_instructions_v2.py` in room_to_room_navigation). `Jinyan0924/hm3d_nav_instruction_clips` (6,487
+  template-instruction samples in 109 HM3D train houses) is the second indoor training set.
+- **Run `indoor1_lora4b_instruction_camera`** (started 2026-10-08, A100 80 GB, 4.1 s/step, 18 GB): ff5's setup from the
+  base model (Qwen3.5-4B-Base, LoRA r32, camera sentence, no final frame) on the two indoor sets, recipe
+  `indoor_instruction_camera`. 5% of recordings / houses are held out for validation (`--holdout-frac`); training uses
+  9,442 + 6,194 samples and validation 448 + 293. 1,960 steps = 2 epochs, eval every 250 steps. Checkpoints go to the
+  **private** `Jinyan0924/qwen_robotics_nav_policy_indoor`, because the Aria and HM3D licences forbid redistribution.
+  Never push them to the public policy repo.
+- **Indoor eval:** a closed-loop HM3D test (visible / history / unseen object goals, success = stop within 1 m). The
+  current `Jinyan0924/hm3d_room_to_room_nav_eval` stores 0.5 s / 2.5 s of history and must be regenerated with 5 s at
+  1 Hz. Its generator (`navbench`, "qwen_navigation_eval_indoor") was never pushed, so it must be rebuilt here. That needs
+  the HM3D scenes (Matterport API token, owner is getting one) and habitat-sim (`setup_machine.sh --habitat`).
 
 ## Source status
 
